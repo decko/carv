@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [],
+  "agent": {
+    "rust-expert": { "model": "opencode-go/deepseek-v4-pro" },
+    "rust-coder": { "model": "opencode-go/deepseek-v4-flash" },
+    "rust-reviewer": { "model": "opencode-go/qwen3.6-plus" },
+    "rust-tester": { "model": "opencode-go/qwen3.5-plus" },
+    "rust-scout": { "model": "opencode-go/qwen3.5-plus" },
+    "rust-architect": { "model": "opencode-go/kimi-k2.6" }
+  }
+}
