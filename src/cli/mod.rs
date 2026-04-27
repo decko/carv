@@ -9,7 +9,7 @@ use clap::Parser;
     version,
     about = "Minimal Rust Coding Agent with Tree-sitter + LSP"
 )]
-pub struct CarveArgs {
+pub struct CarvArgs {
     /// Task prompt. Reads from stdin if not provided and stdin is piped.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
@@ -66,4 +66,88 @@ pub enum OutputFormat {
     Json,
     /// JSON lines stream.
     StreamJson,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_prompt_as_positional_arg() {
+        let args = CarvArgs::try_parse_from(["carv", "hello world"]).unwrap();
+        assert_eq!(args.prompt.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn prompt_is_none_when_omitted() {
+        let args = CarvArgs::try_parse_from(["carv"]).unwrap();
+        assert_eq!(args.prompt, None);
+    }
+
+    #[test]
+    fn disallowed_tools_splits_comma_separated() {
+        let args = CarvArgs::try_parse_from(["carv", "--disallowed-tools", "a,b,c"]).unwrap();
+        assert_eq!(args.disallowed_tools, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn disallowed_tools_empty_when_not_provided() {
+        let args = CarvArgs::try_parse_from(["carv"]).unwrap();
+        assert!(args.disallowed_tools.is_empty());
+    }
+
+    #[test]
+    fn provider_enum_round_trip() {
+        let args = CarvArgs::try_parse_from(["carv", "--provider", "anthropic"]).unwrap();
+        assert_eq!(args.provider, Some(Provider::Anthropic));
+
+        let args = CarvArgs::try_parse_from(["carv", "--provider", "openai"]).unwrap();
+        assert_eq!(args.provider, Some(Provider::OpenAI));
+    }
+
+    #[test]
+    fn output_format_enum_round_trip() {
+        let args = CarvArgs::try_parse_from(["carv", "--output-format", "json"]).unwrap();
+        assert_eq!(args.output_format, OutputFormat::Json);
+
+        let args = CarvArgs::try_parse_from(["carv", "--output-format", "stream-json"]).unwrap();
+        assert_eq!(args.output_format, OutputFormat::StreamJson);
+    }
+
+    #[test]
+    fn max_turns_default_is_50() {
+        let args = CarvArgs::try_parse_from(["carv"]).unwrap();
+        assert_eq!(args.max_turns, 50);
+    }
+
+    #[test]
+    fn max_turns_custom_value() {
+        let args = CarvArgs::try_parse_from(["carv", "--max-turns", "10"]).unwrap();
+        assert_eq!(args.max_turns, 10);
+    }
+
+    #[test]
+    fn verbose_flag_is_false_by_default() {
+        let args = CarvArgs::try_parse_from(["carv"]).unwrap();
+        assert!(!args.verbose);
+    }
+
+    #[test]
+    fn verbose_flag_enabled() {
+        let args = CarvArgs::try_parse_from(["carv", "-v"]).unwrap();
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn print_flag_is_false_by_default() {
+        let args = CarvArgs::try_parse_from(["carv"]).unwrap();
+        assert!(!args.print);
+    }
+
+    #[test]
+    fn model_option() {
+        let args = CarvArgs::try_parse_from(["carv", "-m", "claude-sonnet-4-20250514"]).unwrap();
+        assert_eq!(args.model.as_deref(), Some("claude-sonnet-4-20250514"));
+    }
 }

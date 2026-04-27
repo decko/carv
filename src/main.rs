@@ -1,8 +1,8 @@
-use carv::cli::CarveArgs;
+use carv::cli::CarvArgs;
 use clap::Parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _args = CarveArgs::parse();
+    let _args = CarvArgs::parse();
     Ok(())
 }
