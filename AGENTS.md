@@ -82,7 +82,13 @@ git branch -D task/<slug>
 
 ## Definition of Done (DoD) — Reviewer Gate
 
-**Before generating a PR, always request a reviewer agent to verify the DoD checklist.** Do NOT proceed to PR creation until the reviewer signs off.
+**Two-step review before every PR:**
+
+1. **Agent verifies the checklist** — the implementing agent (rust-expert or rust-coder) runs `cargo build / test / clippy / fmt` and checks all DoD items
+2. **rust-reviewer verifies the agent's work** — delegate to the reviewer subagent (qwen3.6-plus) for mechanical verification of the DoD checklist
+3. **User gives final approval** — the implementing agent presents the DoD report to the user; only proceed to PR after user sign-off
+
+Do NOT proceed to PR creation until both the reviewer agent AND the user sign off.
 
 DoD checklist:
 
@@ -109,7 +115,7 @@ DoD checklist: [all items checked by agent, ready for reviewer verification]
 ```
 
 **The reviewer responds with:**
-- ✅ **Approved** — proceed to PR creation, OR
+- ✅ **Approved** — proceed to user sign-off, OR
 - ❌ **Changes needed** — list of failing items, agent fixes and resubmits
 
 ## Ticket Assignment
