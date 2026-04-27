@@ -9,6 +9,8 @@ cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
+**`Cargo.lock` policy:** Commit it. carv is a binary crate — lockfiles ensure reproducible builds. Library crates omit them; binaries do not.
+
 ## Architecture
 
 **carv** is a single Rust binary (monolith). Full spec: `docs/designs/2026-04-25-carv-design.md`
@@ -142,6 +144,43 @@ Then assign it before writing any code.
 7. After merge → clean up worktree and branch
 ```
 
+## Resuming After Interruption
+
+If the agent session crashes, loses power, or is restarted, the next session MUST check for in-progress work before starting anything new. The GitHub issue + worktree branch combo is the sole indicator of active tasks.
+
+### Resume Protocol
+
+When a new session initializes:
+
+**1. Check for open issues assigned to decko:**
+```bash
+gh issue list --assignee decko --state open
+```
+
+**2. For each open issue, check if a worktree branch exists:**
+```bash
+git branch -a | grep "task/<issue-number>"
+```
+The branch naming convention `task/<issue-number>-<slug>` makes this a direct lookup.
+
+**3. If a worktree exists → this is an active, in-progress task:**
+- Enter the worktree: `cd .worktrees/task/<issue-number>-*`
+- `git status` → see uncommitted changes (work in flight)
+- `git log --oneline -5` → see what's been committed so far
+- Re-read the issue body to re-derive the task scope
+- Continue implementation from current state
+
+**4. If no worktree exists → issue is queued but not started:**
+- Pick the lowest-numbered open issue in the current milestone
+- Create worktree, create branch, begin work
+
+**5. After completing a task, always close the issue.**
+An open issue with a matching worktree branch is the system's only indicator of "work in progress." Nothing else is needed — no checkpoint files, no progress comments, no external state.
+
+### Why this works
+
+Each PR/issue in this project is sized at ~100–150 lines. If the agent crashes mid-implementation, at most 150 lines of uncommitted work are lost. The issue description contains the full scope. The worktree branch has whatever was committed. This is a stateless resume — the agent re-derives everything from git and GitHub state.
+
 ## Error Handling Philosophy
 
 - `anyhow` for application-level errors (the agent loop, CLI)
@@ -165,10 +204,19 @@ Then assign it before writing any code.
 - Integration tests: agent loop with mock LLM + mock tools, fixture projects
 - LSP tests: real language servers against fixture projects (spawn, sync, crash recovery)
 
+### SCM Query File Review
+
+Tree-sitter query files (`.scm`) are **not Rust** — they are S-expression patterns that match AST node types. Reviewing them requires:
+- Checking that `@definition.*` captures match the correct node types for each grammar
+- Verifying that `@name.*` captures reference the right child nodes within definitions
+- Testing against fixture files to confirm captures fire correctly
+
+These files are a distinct review category from Rust code. Don't review them like logic — review them like templates against a known grammar.
+
 ## Dependencies to Know
 
 - `tokio` — multi-threaded runtime, process spawning, channels
-- `tree-sitter` + `tree-sitter-rust/python/typescript` — all pinned to same major version
+- `tree-sitter` + `tree-sitter-rust/python/typescript` — verify compatibility on crates.io. The design doc says "pin to same major version" but grammar crates frequently lag 1-2 versions behind the core crate. Resolve version conflicts before adding these deps (tracked in issue #4).
 - `reqwest` + `reqwest-eventsource` — SSE streaming for LLM providers
 - `ignore` — .gitignore-aware file walking
 - `grep-regex` + `grep-searcher` — ripgrep engine for `search_files`
