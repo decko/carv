@@ -96,6 +96,20 @@ Before executing any task, classify it into one of five tiers. **This determines
    - Yes → **IMPLEMENT** (delegate to rust-coder/flash with scout results)
    - No → **DENSE** (handle directly with rust-expert/pro)
 
+### Scope vs. Line Cap Gate (MANDATORY — apply after classification, before delegation)
+
+Before delegating any IMPLEMENT, FORMULAIC, or DENSE task, **estimate whether the scope fits the line cap:**
+
+| Classification | Max diff lines | Action if exceeds |
+|---|---|---|
+| FORMULAIC | 150 | Split into separate PRs or escalate to ask user |
+| IMPLEMENT | 150 | Split into separate PRs or escalate to ask user |
+| DENSE | 100 | Split into separate PRs or escalate to ask user |
+
+**How to estimate:** Map the issue's feature list to Rust artifacts (one struct ≈ 15 lines, one trait ≈ 10 lines, one fn impl ≈ 10 lines, one test ≈ 10 lines, comments ≈ 10%). If the estimate exceeds the cap, **split before delegating** — do not delegate and hope.
+
+**Post-delegation check:** When the coder returns, immediately compare `git diff --stat` against the cap. If it exceeded, flag it. Either split the PR retroactively or note the violation in the DoD review.
+
 ### Simple Tasks (Answer Directly)
 - Keywords: `what is`, `how to`, `explain`, `show me`, `example`, `difference between`
 - Single concept explanations, quick references

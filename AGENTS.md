@@ -102,6 +102,7 @@ DoD checklist:
 - [ ] Design doc (`docs/designs/2026-04-25-carv-design.md`) is still consistent with the changes (update it if needed)
 - [ ] All new code has tests (unit for tools, integration for flows, self-tests for carv itself)
 - [ ] Error handling follows the project philosophy (no panics in loop, tool errors returned as strings to LLM)
+- [ ] Diff does not exceed the line cap: ≤150 lines total for FORMULAIC/IMPLEMENT tasks, ≤100 lines for DENSE tasks. Split the PR if the scope is larger.
 
 **Reviewer handoff format:**
 
