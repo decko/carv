@@ -102,11 +102,13 @@ impl<W: AsyncWrite + Unpin + Send> StreamOutput for TextFormatter<W> {
             match event {
                 StreamEvent::Text { content } => {
                     self.writer.write_all(content.as_bytes()).await?;
+                    self.writer.flush().await?;
                 }
                 StreamEvent::ToolUse { name, .. } => {
                     if self.verbose {
                         let line = format!("[tool: {name}]\n");
                         self.writer.write_all(line.as_bytes()).await?;
+                        self.writer.flush().await?;
                     }
                 }
                 StreamEvent::Done { turns, usage } => {
@@ -115,6 +117,7 @@ impl<W: AsyncWrite + Unpin + Send> StreamOutput for TextFormatter<W> {
                         usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
                     );
                     self.writer.write_all(line.as_bytes()).await?;
+                    self.writer.flush().await?;
                 }
                 // Thinking and ToolResult are invisible in text mode.
                 StreamEvent::Thinking { .. } | StreamEvent::ToolResult { .. } => {}
@@ -194,9 +197,9 @@ impl<W: AsyncWrite + Unpin + Send> StreamOutput for StreamJsonFormatter<W> {
         event: StreamEvent,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            let line = serde_json::to_string(&event)?;
+            let mut line = serde_json::to_string(&event)?;
+            line.push('\n');
             self.writer.write_all(line.as_bytes()).await?;
-            self.writer.write_all(b"\n").await?;
             self.writer.flush().await?;
             Ok(())
         })
@@ -217,10 +220,21 @@ impl<W: AsyncWrite + Unpin + Send> StreamOutput for StreamJsonFormatter<W> {
 /// agent loop. The `verbose` flag controls whether tool-use lines appear in
 /// text mode output.
 pub fn create_formatter(format: OutputFormat, verbose: bool) -> Box<dyn StreamOutput> {
+    create_formatter_with_writer(format, verbose, io::stdout())
+}
+
+/// Create a [`StreamOutput`] formatter writing to the given writer.
+///
+/// Useful for testing or for directing output to files instead of stdout.
+pub fn create_formatter_with_writer<W: AsyncWrite + Unpin + Send + 'static>(
+    format: OutputFormat,
+    verbose: bool,
+    writer: W,
+) -> Box<dyn StreamOutput> {
     match format {
-        OutputFormat::Text => Box::new(TextFormatter::new(io::stdout(), verbose)),
-        OutputFormat::Json => Box::new(JsonFormatter::new(io::stdout())),
-        OutputFormat::StreamJson => Box::new(StreamJsonFormatter::new(io::stdout())),
+        OutputFormat::Text => Box::new(TextFormatter::new(writer, verbose)),
+        OutputFormat::Json => Box::new(JsonFormatter::new(writer)),
+        OutputFormat::StreamJson => Box::new(StreamJsonFormatter::new(writer)),
     }
 }
 
@@ -398,6 +412,15 @@ mod tests {
     // -----------------------------------------------------------------------
     // JsonFormatter tests
     // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn json_formatter_zero_events_produces_empty_array() {
+        let mut fmt = JsonFormatter::new(TestBuf::default());
+        fmt.finish().await.unwrap();
+
+        let raw = fmt.writer.into_string();
+        assert_eq!(raw, r#"{"events":[]}"#);
+    }
 
     #[tokio::test]
     async fn json_formatter_accumulates_events() {

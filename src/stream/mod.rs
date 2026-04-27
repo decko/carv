@@ -3,6 +3,6 @@
 pub mod output;
 
 pub use output::{
-    create_formatter, JsonFormatter, StreamEvent, StreamJsonFormatter, StreamOutput, TextFormatter,
-    Usage,
+    create_formatter, create_formatter_with_writer, JsonFormatter, StreamEvent,
+    StreamJsonFormatter, StreamOutput, TextFormatter, Usage,
 };
