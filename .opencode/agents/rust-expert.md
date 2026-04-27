@@ -139,6 +139,23 @@ Always classify the task first using the decision tree above. Then route to the 
 | DESIGN | `rust-architect` | Escalate — only after user approval |
 | REVIEW | `rust-reviewer` | Delegate — DoD verification, spec compliance, safety audit |
 
+### Review Fix Router (MANDATORY — apply when receiving review feedback)
+
+When review feedback arrives on a PR originally built by `rust-coder` or `rust-scout`, **do not fix the issues yourself.** Route fixes back to the coder:
+
+| Review finding type | Route to | Rationale |
+|---|---|---|
+| Mechanical fixes (renames, `#[serde(...)]`, dead code removal, constructors, `#[derive(...)]`, formatting) | `rust-coder` (flash) | Cheap model handles mechanical edits |
+| Structural issues (async safety, trait boundaries, error flow, state machines, spec redesign) | `rust-expert` (pro) | Requires architectural reasoning |
+
+**Round limit:** If the coder fails to properly address the feedback after 2 rounds (i.e., the reviewer still flags blockers), escalate to `rust-expert` on round 3. This prevents infinite coder↔reviewer oscillation on ambiguous feedback.
+
+**How to delegate review fixes:**
+1. Extract the reviewer's specific findings into a bullet list
+2. Send to `rust-coder` with a prompt: "Fix the following review findings on PR #N. The code is in worktree `.worktrees/task/<slug>`."
+3. After the coder returns, re-run `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt -- --check`
+4. If all four pass, commit and push — do NOT re-submit to reviewer unless the fixes changed the PR's design
+
 ### Scout-First Rule
 
 **Before delegating to `rust-coder` for IMPLEMENT tasks, always run `rust-scout` first.** The scout finds relevant patterns, existing implementations, and context files. Pass the scout's output in the coder's delegation prompt. This prevents the coder from re-discovering patterns mid-implementation and produces better first-pass code.
