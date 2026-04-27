@@ -181,7 +181,49 @@ An open issue with a matching worktree branch is the system's only indicator of 
 
 Each PR/issue in this project is sized at ~100–150 lines. If the agent crashes mid-implementation, at most 150 lines of uncommitted work are lost. The issue description contains the full scope. The worktree branch has whatever was committed. This is a stateless resume — the agent re-derives everything from git and GitHub state.
 
-## Error Handling Philosophy
+## Memory
+
+Every session starts with zero conversation history. The resumability protocol recovers **what** (code state, task scope) but not **why** (decisions, rejected alternatives, discovered gotchas). The MEMORY.md file bridges this gap.
+
+### Location
+
+```
+~/.local/share/opencode/projects/carv/memory.md
+```
+
+Lives outside the repo — survives worktree cleanup, branch deletion, and full repo removal. Not tracked by git.
+
+### When to read
+
+**At session start, before anything else** — including before the resume protocol. This gives the agent immediate context about the project, active work, and key decisions.
+
+### When to write
+
+After any non-trivial decision or discovery:
+- Choosing between multiple implementation options
+- Discovering a version incompatibility or build gotcha
+- Changing a workflow rule or convention
+- Completing a milestone (update Active State)
+
+Format each entry as:
+```markdown
+### YYYY-MM-DD — Brief title
+- **What:** [one sentence]
+- **Decision:** [what we chose]
+- **Why:** [1-2 sentences of rationale]
+```
+
+### What it contains
+
+| Section | Purpose |
+|---------|---------|
+| Active State | Which milestone, which issue, worktree path |
+| Key Decisions | Dated entries with rationale |
+| Conventions | Rules and patterns the project follows |
+| Gotchas | Things that tripped us up, to avoid repeating |
+| Completed | Closed issue numbers with short description |
+
+**This is NOT a replacement for issues.** Issues are the task tracker. MEMORY.md is the context bridge between sessions. Decisions made in MEMORY.md should reference their issue numbers.
 
 - `anyhow` for application-level errors (the agent loop, CLI)
 - `thiserror` for library-level errors (LLM provider, LSP transport, tree-sitter module)
