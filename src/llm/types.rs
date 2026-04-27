@@ -3,9 +3,19 @@
 //! These are the core types used by the `LlmProvider` trait to communicate
 //! with Anthropic, OpenAI, or other LLM backends. They are distinct from the
 //! output-level types in `crate::stream::output`.
+//!
+//! ## Naming
+//! Types are prefixed `Llm*` (e.g. `LlmEvent`, `LlmUsage`) to avoid collision
+//! with output-level `StreamEvent` and `Usage` in `crate::stream::output`.
+
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Content types
+// ---------------------------------------------------------------------------
 
 /// Content type within a message block.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentType {
     #[serde(rename = "text")]
@@ -20,27 +30,47 @@ pub enum ContentType {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(default)]
         is_error: bool,
     },
 }
 
-/// Cache control annotation for prompt caching.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Cache control annotation for prompt caching (currently only "ephemeral").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub cache_type: String, // "ephemeral"
 }
 
-/// A content block within a message (content + optional cache control).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A content block within a message.
+///
+/// The `content` field is flattened into the block so that the wire format
+/// matches both Anthropic and OpenAI:
+/// `{"type": "text", "text": "hello", "cache_control": ...}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentBlock {
+    #[serde(flatten)]
     pub content: ContentType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }
 
+impl ContentBlock {
+    /// Create a text-only content block.
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentBlock {
+            content: ContentType::Text { text: text.into() },
+            cache_control: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Message types
+// ---------------------------------------------------------------------------
+
 /// Role of the message sender.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
@@ -49,7 +79,7 @@ pub enum Role {
 }
 
 /// A message in the conversation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
@@ -60,10 +90,7 @@ impl Message {
     pub fn user(text: impl Into<String>) -> Self {
         Message {
             role: Role::User,
-            content: vec![ContentBlock {
-                content: ContentType::Text { text: text.into() },
-                cache_control: None,
-            }],
+            content: vec![ContentBlock::text(text)],
         }
     }
 
@@ -71,34 +98,41 @@ impl Message {
     pub fn system(text: impl Into<String>) -> Self {
         Message {
             role: Role::System,
-            content: vec![ContentBlock {
-                content: ContentType::Text { text: text.into() },
-                cache_control: None,
-            }],
+            content: vec![ContentBlock::text(text)],
+        }
+    }
+
+    /// Create a simple assistant message with a single text block.
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::text(text)],
         }
     }
 }
 
-/// Input schema for a tool parameter.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolProperty {
-    #[serde(rename = "type")]
-    pub prop_type: String,
-    pub description: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub r#enum: Vec<String>,
-}
+// ---------------------------------------------------------------------------
+// Tool types
+// ---------------------------------------------------------------------------
 
 /// Provider-agnostic tool definition.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Each provider serializes this to its own wire format:
+/// - Anthropic: `{"name", "description", "input_schema"}`
+/// - OpenAI: `{"type": "function", "function": {"name", "description", "parameters"}}`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
 }
 
+// ---------------------------------------------------------------------------
+// Request configuration
+// ---------------------------------------------------------------------------
+
 /// Configuration for a single LLM request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestConfig {
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,13 +147,19 @@ pub struct RequestConfig {
     pub thinking_budget: Option<u32>,
 }
 
+// ---------------------------------------------------------------------------
+// Streaming events
+// ---------------------------------------------------------------------------
+
 /// Event emitted during LLM streaming.
 ///
-/// These are provider-level events, distinct from the output-level
-/// `crate::stream::output::StreamEvent`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// This is a **higher-level abstraction** over raw SSE events. The provider
+/// implementations translate provider-specific streaming deltas into this
+/// unified enum. The agent loop consumes these events and converts them to
+/// output-level `crate::stream::output::StreamEvent` for formatting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum StreamEvent {
+pub enum LlmEvent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "thinking")]
@@ -140,26 +180,45 @@ pub enum StreamEvent {
     #[serde(rename = "done")]
     Done {
         #[serde(skip_serializing_if = "Option::is_none")]
-        usage: Option<Usage>,
+        usage: Option<LlmUsage>,
     },
     #[serde(rename = "error")]
     Error { error: String },
 }
 
+// ---------------------------------------------------------------------------
+// Usage
+// ---------------------------------------------------------------------------
+
 /// Token usage for a single LLM request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Usage {
+///
+/// Field names match the Anthropic wire format. When integrating with OpenAI,
+/// the provider layer maps OpenAI's field names to these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "cache_read_input_tokens"
+    )]
     pub cache_read_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "cache_creation_input_tokens"
+    )]
     pub cache_creation_tokens: Option<u32>,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Message round-trip tests --
 
     #[test]
     fn test_message_user_roundtrip() {
@@ -168,10 +227,12 @@ mod tests {
         let deserialized: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.role, Role::User);
         assert_eq!(deserialized.content.len(), 1);
-        match &deserialized.content[0].content {
-            ContentType::Text { text } => assert_eq!(text, "hello world"),
-            other => panic!("expected Text content, got {:?}", other),
-        }
+        assert_eq!(
+            deserialized.content[0].content,
+            ContentType::Text {
+                text: "hello world".to_string()
+            }
+        );
     }
 
     #[test]
@@ -180,11 +241,63 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let deserialized: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.role, Role::System);
-        match &deserialized.content[0].content {
-            ContentType::Text { text } => assert_eq!(text, "system prompt"),
-            other => panic!("expected Text content, got {:?}", other),
-        }
+        assert_eq!(
+            deserialized.content[0].content,
+            ContentType::Text {
+                text: "system prompt".to_string()
+            }
+        );
     }
+
+    #[test]
+    fn test_message_assistant_roundtrip() {
+        let msg = Message::assistant("I'll do that.");
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role, Role::Assistant);
+        assert_eq!(
+            deserialized.content[0].content,
+            ContentType::Text {
+                text: "I'll do that.".to_string()
+            }
+        );
+    }
+
+    // -- ContentBlock tests --
+
+    #[test]
+    fn test_content_block_flattens_to_wire_format() {
+        // The Anthropic wire format is flat: {"type": "text", "text": "hello", "cache_control": ...}
+        // ContentBlock should NOT nest content under a "content" key.
+        let block = ContentBlock {
+            content: ContentType::Text {
+                text: "hello".to_string(),
+            },
+            cache_control: Some(CacheControl {
+                cache_type: "ephemeral".to_string(),
+            }),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+
+        // Flattened fields at top level
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "hello");
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+
+        // Should NOT have a nested "content" key
+        assert!(json.get("content").is_none());
+    }
+
+    #[test]
+    fn test_content_block_without_cache_control() {
+        let block = ContentBlock::text("plain text");
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "plain text");
+        assert!(json.get("cache_control").is_none());
+    }
+
+    // -- ContentType tests --
 
     #[test]
     fn test_content_type_text_json_shape() {
@@ -225,6 +338,24 @@ mod tests {
     }
 
     #[test]
+    fn test_content_type_tool_result_deserializes_without_is_error() {
+        // The API omits is_error on successful tool results. Without
+        // #[serde(default)], deserialization would fail here.
+        let json = r#"{"type":"tool_result","tool_use_id":"call_1","content":"done"}"#;
+        let ct: ContentType = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            ct,
+            ContentType::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "done".to_string(),
+                is_error: false,
+            }
+        );
+    }
+
+    // -- ToolDef tests --
+
+    #[test]
     fn test_tool_def_roundtrip() {
         let tool = ToolDef {
             name: "read_file".to_string(),
@@ -246,22 +377,26 @@ mod tests {
         assert_eq!(deserialized.input_schema["type"], "object");
     }
 
+    // -- LlmEvent tests --
+
     #[test]
-    fn test_stream_event_text_roundtrip() {
-        let event = StreamEvent::Text {
+    fn test_llm_event_text_roundtrip() {
+        let event = LlmEvent::Text {
             text: "some text".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: StreamEvent = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            StreamEvent::Text { text } => assert_eq!(text, "some text"),
-            other => panic!("expected Text, got {:?}", other),
-        }
+        let deserialized: LlmEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized,
+            LlmEvent::Text {
+                text: "some text".to_string()
+            }
+        );
     }
 
     #[test]
-    fn test_stream_event_text_json_shape() {
-        let event = StreamEvent::Text {
+    fn test_llm_event_text_json_shape() {
+        let event = LlmEvent::Text {
             text: "hello".to_string(),
         };
         let json = serde_json::to_value(&event).unwrap();
@@ -270,101 +405,85 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_event_tool_use_complete_roundtrip() {
-        let event = StreamEvent::ToolUseComplete {
+    fn test_llm_event_tool_use_complete_roundtrip() {
+        let event = LlmEvent::ToolUseComplete {
             id: "call_1".to_string(),
             name: "read_file".to_string(),
             input: serde_json::json!({"path": "/tmp/foo"}),
         };
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: StreamEvent = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            StreamEvent::ToolUseComplete {
-                id,
-                name,
-                ref input,
-            } => {
-                assert_eq!(id, "call_1");
-                assert_eq!(name, "read_file");
-                assert_eq!(input["path"], "/tmp/foo");
+        let deserialized: LlmEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized,
+            LlmEvent::ToolUseComplete {
+                id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "/tmp/foo"}),
             }
-            other => panic!("expected ToolUseComplete, got {:?}", other),
-        }
+        );
     }
 
     #[test]
-    fn test_stream_event_tool_use_delta_roundtrip() {
-        let event = StreamEvent::ToolUseDelta {
+    fn test_llm_event_tool_use_delta_roundtrip() {
+        let event = LlmEvent::ToolUseDelta {
             id: "call_1".to_string(),
             name: Some("read_file".to_string()),
             input_json: r#"{"path": "/tm"#.to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: StreamEvent = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            StreamEvent::ToolUseDelta {
-                id,
-                name,
-                input_json,
-            } => {
-                assert_eq!(id, "call_1");
-                assert_eq!(name, Some("read_file".to_string()));
-                assert_eq!(input_json, r#"{"path": "/tm"#);
+        let deserialized: LlmEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized,
+            LlmEvent::ToolUseDelta {
+                id: "call_1".to_string(),
+                name: Some("read_file".to_string()),
+                input_json: r#"{"path": "/tm"#.to_string(),
             }
-            other => panic!("expected ToolUseDelta, got {:?}", other),
-        }
+        );
     }
 
     #[test]
-    fn test_stream_event_done_roundtrip() {
-        let usage = Usage {
+    fn test_llm_event_done_roundtrip() {
+        let usage = LlmUsage {
             input_tokens: 100,
             output_tokens: 50,
             cache_read_tokens: Some(10),
             cache_creation_tokens: Some(5),
         };
-        let event = StreamEvent::Done { usage: Some(usage) };
+        let event = LlmEvent::Done {
+            usage: Some(usage.clone()),
+        };
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: StreamEvent = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            StreamEvent::Done { usage } => {
-                let u = usage.expect("usage should be present");
-                assert_eq!(u.input_tokens, 100);
-                assert_eq!(u.output_tokens, 50);
-                assert_eq!(u.cache_read_tokens, Some(10));
-                assert_eq!(u.cache_creation_tokens, Some(5));
-            }
-            other => panic!("expected Done, got {:?}", other),
-        }
+        let deserialized: LlmEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, LlmEvent::Done { usage: Some(usage) });
     }
 
     #[test]
-    fn test_stream_event_done_no_usage_roundtrip() {
-        let event = StreamEvent::Done { usage: None };
+    fn test_llm_event_done_no_usage_roundtrip() {
+        let event = LlmEvent::Done { usage: None };
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: StreamEvent = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            StreamEvent::Done { usage } => assert!(usage.is_none()),
-            other => panic!("expected Done, got {:?}", other),
-        }
+        let deserialized: LlmEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, LlmEvent::Done { usage: None });
     }
 
     #[test]
-    fn test_stream_event_error_roundtrip() {
-        let event = StreamEvent::Error {
+    fn test_llm_event_error_roundtrip() {
+        let event = LlmEvent::Error {
             error: "rate limited".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
-        let deserialized: StreamEvent = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            StreamEvent::Error { error } => assert_eq!(error, "rate limited"),
-            other => panic!("expected Error, got {:?}", other),
-        }
+        let deserialized: LlmEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized,
+            LlmEvent::Error {
+                error: "rate limited".to_string()
+            }
+        );
     }
 
     #[test]
-    fn test_stream_event_error_json_shape() {
-        let event = StreamEvent::Error {
+    fn test_llm_event_error_json_shape() {
+        let event = LlmEvent::Error {
             error: "something broke".to_string(),
         };
         let json = serde_json::to_value(&event).unwrap();
@@ -372,16 +491,18 @@ mod tests {
         assert_eq!(json["error"], "something broke");
     }
 
+    // -- LlmUsage tests --
+
     #[test]
-    fn test_usage_all_fields_roundtrip() {
-        let usage = Usage {
+    fn test_llm_usage_all_fields_roundtrip() {
+        let usage = LlmUsage {
             input_tokens: 200,
             output_tokens: 150,
             cache_read_tokens: Some(20),
             cache_creation_tokens: Some(10),
         };
         let json = serde_json::to_string(&usage).unwrap();
-        let deserialized: Usage = serde_json::from_str(&json).unwrap();
+        let deserialized: LlmUsage = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.input_tokens, 200);
         assert_eq!(deserialized.output_tokens, 150);
         assert_eq!(deserialized.cache_read_tokens, Some(20));
@@ -389,20 +510,39 @@ mod tests {
     }
 
     #[test]
-    fn test_usage_optional_fields_roundtrip() {
-        let usage = Usage {
+    fn test_llm_usage_optional_fields_roundtrip() {
+        let usage = LlmUsage {
             input_tokens: 100,
             output_tokens: 50,
             cache_read_tokens: None,
             cache_creation_tokens: None,
         };
         let json = serde_json::to_string(&usage).unwrap();
-        let deserialized: Usage = serde_json::from_str(&json).unwrap();
+        let deserialized: LlmUsage = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.input_tokens, 100);
         assert_eq!(deserialized.output_tokens, 50);
         assert!(deserialized.cache_read_tokens.is_none());
         assert!(deserialized.cache_creation_tokens.is_none());
     }
+
+    #[test]
+    fn test_llm_usage_deserializes_anthropic_field_names() {
+        // Anthropic sends cache_read_input_tokens / cache_creation_input_tokens.
+        // Our struct uses default field names, so we alias the Anthropic names.
+        let json = r#"{
+            "input_tokens": 500,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 300,
+            "cache_creation_input_tokens": 100
+        }"#;
+        let usage: LlmUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 200);
+        assert_eq!(usage.cache_read_tokens, Some(300));
+        assert_eq!(usage.cache_creation_tokens, Some(100));
+    }
+
+    // -- RequestConfig tests --
 
     #[test]
     fn test_request_config_defaults() {
@@ -416,11 +556,8 @@ mod tests {
         };
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["max_tokens"], 4096);
-        // Default-false fields should serialize
         assert_eq!(json["thinking"], false);
-        // Empty vec should be omitted
         assert!(json.get("stop_sequences").is_none());
-        // None fields should be omitted
         assert!(json.get("temperature").is_none());
         assert!(json.get("top_p").is_none());
         assert!(json.get("thinking_budget").is_none());
@@ -445,6 +582,8 @@ mod tests {
         assert_eq!(json["thinking_budget"], 1024);
     }
 
+    // -- Role tests --
+
     #[test]
     fn test_role_serialization() {
         assert_eq!(serde_json::to_value(Role::System).unwrap(), "system");
@@ -452,47 +591,39 @@ mod tests {
         assert_eq!(serde_json::to_value(Role::Assistant).unwrap(), "assistant");
     }
 
+    // -- PartialEq tests --
+
     #[test]
-    fn test_content_block_with_cache_control() {
-        let block = ContentBlock {
-            content: ContentType::Text {
-                text: "cached text".to_string(),
-            },
-            cache_control: Some(CacheControl {
-                cache_type: "ephemeral".to_string(),
-            }),
+    fn test_content_type_partial_eq() {
+        let a = ContentType::Text {
+            text: "hello".to_string(),
         };
-        let json = serde_json::to_value(&block).unwrap();
-        assert_eq!(json["content"]["type"], "text");
-        assert_eq!(json["content"]["text"], "cached text");
-        assert_eq!(json["cache_control"]["type"], "ephemeral");
+        let b = ContentType::Text {
+            text: "hello".to_string(),
+        };
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn test_tool_property_roundtrip() {
-        let prop = ToolProperty {
-            prop_type: "string".to_string(),
-            description: "A file path".to_string(),
-            r#enum: vec![],
+    fn test_llm_event_partial_eq() {
+        let a = LlmEvent::Text {
+            text: "hello".to_string(),
         };
-        let json = serde_json::to_string(&prop).unwrap();
-        let deserialized: ToolProperty = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.prop_type, "string");
-        assert_eq!(deserialized.description, "A file path");
-        assert!(deserialized.r#enum.is_empty());
+        let b = LlmEvent::Text {
+            text: "hello".to_string(),
+        };
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn test_tool_property_with_enum() {
-        let prop = ToolProperty {
-            prop_type: "string".to_string(),
-            description: "Log level".to_string(),
-            r#enum: vec!["debug".to_string(), "info".to_string(), "error".to_string()],
-        };
-        let json = serde_json::to_value(&prop).unwrap();
-        assert_eq!(json["type"], "string");
-        assert_eq!(json["enum"][0], "debug");
-        assert_eq!(json["enum"][1], "info");
-        assert_eq!(json["enum"][2], "error");
+    fn test_content_block_convenience() {
+        let block = ContentBlock::text("hello");
+        assert_eq!(
+            block.content,
+            ContentType::Text {
+                text: "hello".to_string()
+            }
+        );
+        assert!(block.cache_control.is_none());
     }
 }
