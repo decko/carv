@@ -80,7 +80,6 @@ pub enum OutputFormat {
 }
 
 /// Resolved configuration combining CLI args with environment variables.
-#[derive(Debug)]
 pub struct CarvConfig {
     /// Task prompt.
     pub prompt: Option<String>,
@@ -136,6 +135,23 @@ impl CarvConfig {
             verbose: args.verbose,
             api_key,
         })
+    }
+}
+
+impl fmt::Debug for CarvConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CarvConfig")
+            .field("prompt", &self.prompt)
+            .field("model", &self.model)
+            .field("provider", &self.provider)
+            .field("print", &self.print)
+            .field("max_turns", &self.max_turns)
+            .field("output_format", &self.output_format)
+            .field("system_prompt", &self.system_prompt)
+            .field("disallowed_tools", &self.disallowed_tools)
+            .field("verbose", &self.verbose)
+            .field("api_key", &"<redacted>")
+            .finish()
     }
 }
 
@@ -274,6 +290,14 @@ mod tests {
     }
 
     #[test]
+    fn openai_auto_detect_o4() {
+        unsafe { std::env::set_var("OPENAI_API_KEY", "test-key") };
+        let args = CarvArgs::try_parse_from(["carv", "-m", "o4-mini"]).unwrap();
+        let config = CarvConfig::from_args_and_env(args).unwrap();
+        assert_eq!(config.provider, Provider::OpenAI);
+    }
+
+    #[test]
     fn unknown_model_without_provider_errors() {
         let args = CarvArgs::try_parse_from(["carv", "-m", "unknown-model"]).unwrap();
         let result = CarvConfig::from_args_and_env(args);
@@ -304,12 +328,17 @@ mod tests {
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("ANTHROPIC_API_KEY"), "error: {err}");
 
-        // 2. Auto-detect claude → Anthropic
+        // 2. Auto-detect claude- prefix → Anthropic
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "test-key") };
         let args = CarvArgs::try_parse_from(["carv", "-m", "claude-sonnet-4-20250514"]).unwrap();
         let config = CarvConfig::from_args_and_env(args).unwrap();
         assert_eq!(config.provider, Provider::Anthropic);
         assert_eq!(config.api_key, "test-key");
+
+        // 2b. Auto-detect anthropic/ prefix → Anthropic
+        let args = CarvArgs::try_parse_from(["carv", "-m", "anthropic/claude-sonnet"]).unwrap();
+        let config = CarvConfig::from_args_and_env(args).unwrap();
+        assert_eq!(config.provider, Provider::Anthropic);
 
         // 3. Explicit --provider overrides model-based auto-detect
         //    model=gpt-4o suggests OpenAI, but --provider anthropic overrides
