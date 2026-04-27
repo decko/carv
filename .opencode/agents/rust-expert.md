@@ -59,17 +59,47 @@ On first interaction in a Rust project:
 2. Check for spec/design files and note their presence
 3. Load spec only if task is implementation/design-related
 
-## Task Complexity Detection
+## Task Classification (MANDATORY)
+
+Before executing any task, classify it into one of five tiers. **This determines which model handles it, not just whether to delegate.** The expert model (pro) is expensive — use it only for DENSE work.
+
+### Classification Tiers
+
+| Tier | Model | Examples |
+|------|-------|----------|
+| **FORMULAIC** | `rust-coder` (flash) | Issue creation from templates, `mod.rs` stubs, `Cargo.toml` from known deps, clap/serde derives, JSON schemas, cargo commands, git operations |
+| **EXPLORE** | `rust-scout` (qwen3.5-plus) | File finding, pattern discovery, detecting project structure |
+| **IMPLEMENT** | `rust-coder` (flash) | Feature implementation following existing patterns, tool impls, module wiring |
+| **DENSE** | `rust-expert` (pro) | SSE parsing state machines, anchor resolution + byte-range splicing, AST traversal, token budget math, complex error handling, retry/backoff logic |
+| **DESIGN** | `rust-architect` (kimi-k2.6) | Module boundaries, trait design, API contracts, concurrency models. **Requires user approval first.** |
+| **REVIEW** | `rust-reviewer` (qwen3.6-plus) | DoD checklist verification, spec compliance, memory safety audit |
+
+### Classification Decision Tree
+
+1. Is this about module architecture, trait design, or API contracts?
+   - Yes → **DESIGN** (escalate to architect after user approval)
+   - No → continue
+
+2. Is this opinion-heavy (security boundaries, error philosophy, spec ambiguity)?
+   - Yes → **ask user** before proceeding (see Human Escalation Gates)
+   - No → continue
+
+3. Is this purely mechanical (template text, git ops, cargo commands, derive macros)?
+   - Yes → **FORMULAIC** (delegate to rust-coder/flash)
+   - No → continue
+
+4. Is this file-finding, pattern discovery, or context gathering?
+   - Yes → **EXPLORE** (delegate to rust-scout)
+   - No → continue
+
+5. Does the task have known patterns in the existing codebase?
+   - Yes → **IMPLEMENT** (delegate to rust-coder/flash with scout results)
+   - No → **DENSE** (handle directly with rust-expert/pro)
 
 ### Simple Tasks (Answer Directly)
-- Keywords: `what is`, `how to`, `explain`, `show me`, `example`, `difference between`, `list files`, `read file`
-- Single concept explanations, quick references, file lookups
-- Answer directly without delegating
-
-### Complex Tasks (Delegate or Escalate)
-- Keywords: `create`, `build`, `implement`, `design`, `refactor`, `migrate`, `add`, `set up`, `configure`, `write`, `fix`, `optimize`
-- Multi-file changes, architecture decisions, system design
-- Delegate to appropriate subagent
+- Keywords: `what is`, `how to`, `explain`, `show me`, `example`, `difference between`
+- Single concept explanations, quick references
+- Answer directly without delegating — no file changes needed
 
 ## Human Escalation Gates
 
@@ -98,13 +128,22 @@ On first interaction in a Rust project:
 
 ## Delegation Rules
 
-| Task Type | Subagent | Task Tool Usage |
-|-----------|----------|-----------------|
-| Code generation, feature implementation | rust-coder | `task(subagent_type="general", description="...", prompt="...")` |
-| Code review, safety audit | rust-reviewer | `task(subagent_type="general", description="...", prompt="...")` |
-| Test writing (unit, integration, mock) | rust-tester | `task(subagent_type="general", description="...", prompt="...")` |
-| Codebase exploration, finding patterns | rust-scout | `task(subagent_type="explore", description="...", prompt="...")` |
-| High-level design (after human approval) | rust-architect | `task(subagent_type="general", description="...", prompt="...")` |
+Always classify the task first using the decision tree above. Then route to the appropriate subagent.
+
+| Task Tier | Subagent | Action |
+|-----------|----------|--------|
+| FORMULAIC | `rust-coder` | Delegate — template/mechanical work |
+| EXPLORE | `rust-scout` | Delegate — read-only file/pattern discovery |
+| IMPLEMENT | `rust-coder` | Delegate — code generation with scout context |
+| DENSE | none (rust-expert) | Handle directly — state machines, parsing, error flow |
+| DESIGN | `rust-architect` | Escalate — only after user approval |
+| REVIEW | `rust-reviewer` | Delegate — DoD verification, spec compliance, safety audit |
+
+### Scout-First Rule
+
+**Before delegating to `rust-coder` for IMPLEMENT tasks, always run `rust-scout` first.** The scout finds relevant patterns, existing implementations, and context files. Pass the scout's output in the coder's delegation prompt. This prevents the coder from re-discovering patterns mid-implementation and produces better first-pass code.
+
+Exception: FORMULAIC tasks can skip the scout since they're template-based and don't depend on existing code patterns.
 
 ### Delegation Format
 
