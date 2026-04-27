@@ -80,15 +80,39 @@ git worktree remove .worktrees/task/<slug>
 git branch -D task/<slug>
 ```
 
+### ✅ SSH Commit Signing
+
+Every commit must be SSH-signed. The signing config lives in the repo's local git config:
+
+```bash
+git config --local gpg.format ssh
+git config --local user.signingkey "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIINgVXr/ijCjWvgKFW5mlCIG8Njjkoq3ptCzD/VicJ39 decko@lion"
+git config --local commit.gpgsign true
+```
+
+**Agents must verify SSH signing is active in every worktree before committing:**
+```bash
+git config --local commit.gpgsign   # must return "true"
+```
+
+The private key is held in Bitwarden's SSH agent. Signing uses `ssh-agent` — no key file on disk.
+
+### ⚠️ Verification gotcha
+
+`git log --show-signature` prints "No signature" when `gpg.ssh.allowedSignersFile` is not configured — even though the commit IS signed. This is a local verification issue, not a signing failure. GitHub verifies SSH signatures natively. To check raw signatures:
+```bash
+git cat-file -p HEAD | grep -A10 "BEGIN SSH SIGNATURE"
+```
+
 ## Definition of Done (DoD) — Reviewer Gate
 
 **Two-step review before every PR:**
 
 1. **Agent verifies the checklist** — the implementing agent (rust-expert or rust-coder) runs `cargo build / test / clippy / fmt` and checks all DoD items
 2. **rust-reviewer verifies the agent's work** — delegate to the reviewer subagent (qwen3.6-plus) for mechanical verification of the DoD checklist
-3. **User gives final approval** — the implementing agent presents the DoD report to the user; only proceed to PR after user sign-off
+3. **PR created directly** — after reviewer approval, create the PR immediately (no pre-PR user sign-off)
 
-Do NOT proceed to PR creation until both the reviewer agent AND the user sign off.
+Do NOT proceed to PR creation until the reviewer agent signs off.
 
 DoD checklist:
 
@@ -116,7 +140,7 @@ DoD checklist: [all items checked by agent, ready for reviewer verification]
 ```
 
 **The reviewer responds with:**
-- ✅ **Approved** — proceed to user sign-off, OR
+- ✅ **Approved** — proceed to PR creation, OR
 - ❌ **Changes needed** — list of failing items, agent fixes and resubmits
 
 ## Ticket Assignment
@@ -144,11 +168,12 @@ Then assign it before writing any code.
 ```
 1. Create or identify the GitHub issue → assign to decko
 2. Create a git worktree under .worktrees/task/<slug>
-3. Implement the changes inside the worktree
-4. Run cargo build / test / clippy / fmt
-5. Request reviewer agent to verify DoD
-6. Reviewer approves → create PR from the worktree branch
-7. After merge → clean up worktree and branch
+3. Verify SSH signing is active (git config --local commit.gpgsign)
+4. Implement the changes inside the worktree
+5. Run cargo build / test / clippy / fmt
+6. Request reviewer agent to verify DoD
+7. Reviewer approves → create PR from the worktree branch
+8. After merge → clean up worktree and branch
 ```
 
 ## Resuming After Interruption
@@ -242,6 +267,7 @@ Format each entry as:
 
 - Rust edition 2021
 - `clap` derive for CLI, `serde` derive for wire types
+- **Naming:** Project prefix is `Carv` not `Carve` — the crate is `carv`. Use `CarvArgs`, `CarvConfig`, etc.
 - `tracing` + `tracing-subscriber` for structured logging (not `println!`)
 - Trait methods return `impl Future<Output = Result<T>> + Send` (no boxed futures)
 - Stream results via `Pin<Box<dyn Stream<Item = Result<T>> + Send>>`
