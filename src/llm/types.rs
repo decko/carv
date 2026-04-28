@@ -222,8 +222,8 @@ pub struct LlmUsage {
 /// Sendable, pinned stream of [`LlmEvent`] items.
 ///
 /// Used as the return type of [`LlmProvider::stream_chat`]. Wrapping in `Pin`
-/// is required for async iteration, and boxing gives us `Sized` (necessary for
-/// returning from a trait method).
+/// is required for async iteration, and boxing erases the concrete type so the
+/// trait remains object-safe.
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmEvent>> + Send>>;
 
 /// Sendable, pinned future resolving to a [`LlmStream`].
