@@ -105,7 +105,7 @@ pub trait LlmProvider: Send + Sync {
         messages: &[Message],
         tools: &[ToolDef],
         config: &RequestConfig,
-    ) -> impl Future<Output = Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>>> + Send;
+    ) -> impl Future<Output = Result<Pin<Box<dyn Stream<Item = Result<LlmEvent>> + Send>>>> + Send;
 }
 ```
 
