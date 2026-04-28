@@ -99,17 +99,21 @@ Provider auto-detection from model name (overridden by `--provider`):
 ## LLM Provider
 
 ```rust
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmEvent>> + Send>>;
+
+pub type LlmStreamFuture<'a> = Pin<Box<dyn Future<Output = Result<LlmStream>> + Send + 'a>>;
+
 pub trait LlmProvider: Send + Sync {
     fn stream_chat(
         &self,
         messages: &[Message],
         tools: &[ToolDef],
         config: &RequestConfig,
-    ) -> impl Future<Output = Result<Pin<Box<dyn Stream<Item = Result<LlmEvent>> + Send>>>> + Send;
+    ) -> LlmStreamFuture<'_>;
 }
 ```
 
-No `async-trait` crate — uses native async fn in traits (Rust 1.75+, RPITIT).
+No `async-trait` crate — uses explicit boxed futures for object safety (so `Arc<dyn LlmProvider>` works in the agent loop). Same pattern as `StreamOutput`.
 
 ### RequestConfig
 

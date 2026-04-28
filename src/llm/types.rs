@@ -8,6 +8,11 @@
 //! Types are prefixed `Llm*` (e.g. `LlmEvent`, `LlmUsage`) to avoid collision
 //! with output-level `StreamEvent` and `Usage` in `crate::stream::output`.
 
+use std::future::Future;
+use std::pin::Pin;
+
+use anyhow::Result;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -209,6 +214,24 @@ pub struct LlmUsage {
     )]
     pub cache_creation_tokens: Option<u32>,
 }
+
+// ---------------------------------------------------------------------------
+// Stream type aliases
+// ---------------------------------------------------------------------------
+
+/// Sendable, pinned stream of [`LlmEvent`] items.
+///
+/// Used as the return type of [`LlmProvider::stream_chat`]. Wrapping in `Pin`
+/// is required for async iteration, and boxing gives us `Sized` (necessary for
+/// returning from a trait method).
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmEvent>> + Send>>;
+
+/// Sendable, pinned future resolving to a [`LlmStream`].
+///
+/// The `'a` lifetime corresponds to the borrow of the provider's `&self`.
+/// Using `dyn Future` (instead of `impl Future`) makes the
+/// [`LlmProvider`](crate::llm::provider::LlmProvider) trait object-safe.
+pub type LlmStreamFuture<'a> = Pin<Box<dyn Future<Output = Result<LlmStream>> + Send + 'a>>;
 
 // ---------------------------------------------------------------------------
 // Tests
