@@ -2,7 +2,7 @@
 //
 // Every line of code can be referenced by a deterministic, human-readable
 // word (an "anchor"). Anchors are derived from a 64-bit FNV-1a hash of
-// line content, mapped into a fixed dictionary of ~500 common English
+// line content, mapped into a fixed dictionary of ~1500 common English
 // words. They remain stable across insertions and deletions elsewhere in
 // the file — unlike line numbers, which shift.
 //
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn dictionary_has_enough_words() {
         let n = dictionary_size();
-        assert!(n >= 400, "expected at least 400 words, got {n}",);
+        assert!(n >= 1000, "expected at least 1000 words, got {n}",);
     }
 
     #[test]
