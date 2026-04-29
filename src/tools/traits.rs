@@ -56,6 +56,7 @@ pub struct ToolResult {
 
 impl ToolResult {
     /// Create a successful tool result.
+    #[must_use]
     pub fn ok(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
@@ -64,6 +65,7 @@ impl ToolResult {
     }
 
     /// Create a tool result representing a recoverable error.
+    #[must_use]
     pub fn error(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
@@ -106,6 +108,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Execute the tool with the given input and context.
+    #[must_use]
     fn execute<'a>(&'a self, input: Value, ctx: &'a ToolContext) -> ToolFuture<'a>;
 }
 
