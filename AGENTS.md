@@ -272,6 +272,7 @@ Format each entry as:
 - Trait methods return `impl Future<Output = Result<T>> + Send` (no boxed futures)
 - Stream results via `Pin<Box<dyn Stream<Item = Result<T>> + Send>>`
 - Read-only vs. write tool distinction is informational only (shown in verbose/debug output)
+- Functions used only in `#[cfg(test)]` need `#[allow(dead_code)]` even with `pub(crate)` visibility. Clippy's `dead_code` lint doesn't count test code as usage. Add the attribute with a comment: `// Only called from tests.`
 
 ## Testing Strategy
 
@@ -304,3 +305,5 @@ These files are a distinct review category from Rust code. Don't review them lik
 3. Never add a dependency to `Cargo.toml` without explicit approval
 4. Never modify security boundaries (sandbox configs, timeouts, command execution) without explicit approval
 5. After any file-modifying tool, invalidate anchor mappings and tree-sitter parse caches
+6. When changing a constant, threshold, word count, or numeric parameter — grep for related comments across the crate. Stale comments are the most common review finding and mislead future maintainers.
+7. Pure data files (word lists, fixtures, query files) are excluded from the PR line cap. Flag them separately in DoD reviews if the total diff exceeds the cap.
