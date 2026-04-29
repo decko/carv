@@ -4,6 +4,8 @@
 //! the [`Tool`] trait. The registry holds `Box<dyn Tool>` entries and applies
 //! deny-list filtering. See the design doc for the full tool inventory.
 
+pub mod registry;
 pub mod traits;
 
+pub use registry::ToolRegistry;
 pub use traits::{Tool, ToolContext, ToolFuture, ToolResult};
