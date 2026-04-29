@@ -1,0 +1,71 @@
+# CI pipeline for carv
+#
+# Triggers:
+#   - push to main
+#   - pull_request against all branches
+#
+# Jobs (4 gates in dependency order):
+#   1. build   — cargo build --verbose (must pass before other jobs)
+#   2. test    — cargo test --verbose  (depends on build)
+#   3. clippy  — cargo clippy -- -D warnings (depends on build)
+#   4. fmt     — cargo fmt -- --check (depends on build, runs parallel with test/clippy)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: cargo build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rust-version: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --verbose
+
+  test:
+    name: cargo test
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rust-version: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --verbose
+
+  clippy:
+    name: cargo clippy
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rust-version: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -- -D warnings
+
+  fmt:
+    name: cargo fmt
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rust-version: stable
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -- --check
