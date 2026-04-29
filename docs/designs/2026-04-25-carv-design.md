@@ -187,9 +187,11 @@ pub trait Tool: Send + Sync {
         &self,
         input: Value,
         ctx: &ToolContext,
-    ) -> impl Future<Output = Result<ToolResult>> + Send;
+    ) -> ToolFuture<'_>;  // boxed future for object safety (same pattern as LlmProvider)
 }
 ```
+
+The boxed-future return type (`ToolFuture<'_>`) rather than RPITIT `impl Future` keeps the trait **object-safe**, so callers can hold `dyn Tool` in a registry (`Vec<Box<dyn Tool>>`). Same pattern as `LlmProvider`.
 
 All tools auto-approved. `--disallowed-tools` removes tools from the registry before the LLM sees them. `is_read_only()` is informational — shown in `--verbose` output and stream-json events, but does not gate execution.
 
