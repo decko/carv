@@ -269,7 +269,7 @@ Format each entry as:
 - `clap` derive for CLI, `serde` derive for wire types
 - **Naming:** Project prefix is `Carv` not `Carve` — the crate is `carv`. Use `CarvArgs`, `CarvConfig`, etc.
 - `tracing` + `tracing-subscriber` for structured logging (not `println!`)
-- Trait methods return `impl Future<Output = Result<T>> + Send` (no boxed futures)
+- Trait methods use `impl Future<Output = Result<T>> + Send` where RPITIT works. Traits requiring `dyn` dispatch (object-safe) use boxed futures via `Pin<Box<dyn Future>>` with type aliases (e.g., `LlmStreamFuture`, `ToolFuture`).
 - Stream results via `Pin<Box<dyn Stream<Item = Result<T>> + Send>>`
 - Read-only vs. write tool distinction is informational only (shown in verbose/debug output)
 - Functions used only in `#[cfg(test)]` need `#[allow(dead_code)]` even with `pub(crate)` visibility. Clippy's `dead_code` lint doesn't count test code as usage. Add the attribute with a comment: `// Only called from tests.`
