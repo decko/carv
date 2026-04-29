@@ -2,7 +2,7 @@
 //
 // Every line of code can be referenced by a deterministic, human-readable
 // word (an "anchor"). Anchors are derived from a 64-bit FNV-1a hash of
-// line content, mapped into a fixed dictionary of ~1500 common English
+// line content, mapped into a fixed dictionary of ~1400 common English
 // words. They remain stable across insertions and deletions elsewhere in
 // the file — unlike line numbers, which shift.
 //
@@ -244,7 +244,7 @@ mod tests {
         let unique: HashSet<_> = anchors.iter().copied().collect();
         let uniqueness = unique.len() as f64 / anchors.len() as f64;
 
-        // With a ~1400-word dictionary and ~57 distinct code lines,
+        // With a ~1400-word dictionary and ~55 distinct code lines,
         // we expect few collisions. A uniqueness >= 80% is the baseline
         // for acceptable hash distribution; real collision handling
         // is done by AnchorState (issue #11).
