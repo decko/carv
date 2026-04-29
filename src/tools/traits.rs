@@ -42,7 +42,7 @@ pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolResult>> + Send
 /// signals that the tool encountered a recoverable problem (e.g. file not
 /// found, parse failure) — the LLM can use this information to retry or
 /// adjust its approach.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
     /// The output text returned to the LLM.
     pub content: String,
@@ -54,11 +54,30 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+impl ToolResult {
+    /// Create a successful tool result.
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    /// Create a tool result representing a recoverable error.
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+        }
+    }
+}
+
 /// Context shared across all tool invocations.
 ///
 /// Carries project state such as the workspace root, LSP connection pool,
 /// and permission configuration. This is a stub that will be expanded in
 /// a future issue (#15).
+#[derive(Debug, Default)]
 pub struct ToolContext {}
 
 // ---------------------------------------------------------------------------
@@ -87,7 +106,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Execute the tool with the given input and context.
-    fn execute(&self, input: Value, ctx: &ToolContext) -> ToolFuture<'_>;
+    fn execute<'a>(&'a self, input: Value, ctx: &'a ToolContext) -> ToolFuture<'a>;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,10 +140,16 @@ mod tests {
             true
         }
 
-        fn execute(&self, _input: Value, _ctx: &ToolContext) -> ToolFuture<'_> {
+        fn execute<'a>(&'a self, _input: Value, _ctx: &'a ToolContext) -> ToolFuture<'a> {
             let content = self.content.clone();
             let is_error = self.should_error;
-            Box::pin(async move { Ok(ToolResult { content, is_error }) })
+            Box::pin(async move {
+                if is_error {
+                    Ok(ToolResult::error(content))
+                } else {
+                    Ok(ToolResult::ok(content))
+                }
+            })
         }
     }
 
@@ -134,7 +159,7 @@ mod tests {
             content: "hello".into(),
             should_error: false,
         };
-        let ctx = ToolContext {};
+        let ctx = ToolContext::default();
         let result = tool.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(result.content, "hello");
         assert!(!result.is_error);
@@ -146,9 +171,10 @@ mod tests {
             content: "failed".into(),
             should_error: true,
         };
-        let ctx = ToolContext {};
+        let ctx = ToolContext::default();
         let result = tool.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(result.content, "failed");
         assert!(result.is_error);
+        assert_eq!(result, ToolResult::error("failed"));
     }
 }

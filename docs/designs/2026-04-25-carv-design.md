@@ -183,15 +183,15 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;  // JSON Schema
     fn is_read_only(&self) -> bool;        // informational, used in verbose output
-    fn execute(
-        &self,
+    fn execute<'a>(
+        &'a self,
         input: Value,
-        ctx: &ToolContext,
-    ) -> ToolFuture<'_>;  // boxed future for object safety (same pattern as LlmProvider)
+        ctx: &'a ToolContext,
+    ) -> ToolFuture<'a>;  // boxed future for object safety (same pattern as LlmProvider)
 }
 ```
 
-The boxed-future return type (`ToolFuture<'_>`) rather than RPITIT `impl Future` keeps the trait **object-safe**, so callers can hold `dyn Tool` in a registry (`Vec<Box<dyn Tool>>`). Same pattern as `LlmProvider`.
+The boxed-future return type (`ToolFuture<'a>`) rather than RPITIT `impl Future` keeps the trait **object-safe**, so callers can hold `dyn Tool` in a registry (`Vec<Box<dyn Tool>>`). Same pattern as `LlmProvider`.
 
 All tools auto-approved. `--disallowed-tools` removes tools from the registry before the LLM sees them. `is_read_only()` is informational — shown in `--verbose` output and stream-json events, but does not gate execution.
 
