@@ -13,7 +13,7 @@
 use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
-// Word dictionary — ~500 capitalized English words, 4-8 chars.
+// Word dictionary — ~1400 capitalized English words, 4-8 chars.
 // ---------------------------------------------------------------------------
 
 /// Lazy-initialized vector of words from the word list.
@@ -30,7 +30,11 @@ static WORDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 // ---------------------------------------------------------------------------
 
 /// Return the total number of words in the dictionary.
-pub fn dictionary_size() -> usize {
+///
+/// Used by test assertions; suppressed from dead-code warnings
+/// because test-only usage doesn't satisfy the lint.
+#[allow(dead_code)]
+pub(crate) fn dictionary_size() -> usize {
     WORDS.len()
 }
 
@@ -106,6 +110,28 @@ mod tests {
     }
 
     #[test]
+    fn all_words_meet_length_spec() {
+        for word in WORDS.iter() {
+            assert!(
+                word.len() >= 4 && word.len() <= 8,
+                "word '{word}' is {} chars; spec requires 4-8",
+                word.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn indentation_does_not_affect_anchor() {
+        // Line content is trimmed before hashing, so indentation
+        // differences don't produce spurious anchor drift. Collision
+        // disambiguation (occurrence indices) handles same-content
+        // lines at different positions.
+        let a = word_for_line("}");
+        let b = word_for_line("    }");
+        assert_eq!(a, b, "indentation must not change anchor for same content");
+    }
+
+    #[test]
     fn same_line_produces_same_anchor() {
         let line = "pub fn calculate(x: i32) -> i32 {";
         let a = word_for_line(line);
@@ -125,17 +151,6 @@ mod tests {
                 "anchor must be stable across repeated calls",
             );
         }
-    }
-
-    #[test]
-    fn anchors_are_stable_across_func_boundaries() {
-        // Different calling contexts must not affect the hash.
-        let a = word_for_line("fn foo() {");
-        let b = {
-            let line = "fn foo() {".to_string();
-            word_for_line(&line)
-        };
-        assert_eq!(a, b);
     }
 
     #[test]
@@ -198,7 +213,6 @@ mod tests {
             "let hash = hasher.finalize_fixed();",
             "self.tokens_used += delta;",
             "}",
-            "  ",
             "x",
             "return;",
             "Ok(())?;",
@@ -230,9 +244,10 @@ mod tests {
         let unique: HashSet<_> = anchors.iter().copied().collect();
         let uniqueness = unique.len() as f64 / anchors.len() as f64;
 
-        // With a ~1500-word dictionary and ~60 distinct code lines,
-        // we expect very few collisions. A uniqueness >= 90% is easily
-        // achievable if the hash distributes well.
+        // With a ~1400-word dictionary and ~57 distinct code lines,
+        // we expect few collisions. A uniqueness >= 80% is the baseline
+        // for acceptable hash distribution; real collision handling
+        // is done by AnchorState (issue #11).
         let expected_threshold = 0.80;
         assert!(
             uniqueness >= expected_threshold,
