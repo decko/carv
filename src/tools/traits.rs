@@ -16,7 +16,9 @@
 //!   `is_error: true` so the LLM can observe and recover.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -76,11 +78,14 @@ impl ToolResult {
 
 /// Context shared across all tool invocations.
 ///
-/// Carries project state such as the workspace root, LSP connection pool,
-/// and permission configuration. This is a stub that will be expanded in
-/// a future issue (#15).
-#[derive(Debug, Default)]
-pub struct ToolContext {}
+/// Carries project state accessible to every tool's `execute` method.
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    /// Absolute path to the project root directory.
+    pub workspace_root: PathBuf,
+    /// Shared anchor state for hash-anchored line referencing.
+    pub anchor_state: Arc<Mutex<crate::hashing::state::AnchorState>>,
+}
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -120,6 +125,7 @@ pub trait Tool: Send + Sync {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
     struct MockTool {
         content: String,
@@ -156,13 +162,21 @@ mod tests {
         }
     }
 
+    /// Minimal `ToolContext` for use in tests where the filesystem is not relevant.
+    fn test_context() -> ToolContext {
+        ToolContext {
+            workspace_root: PathBuf::from("/tmp/test"),
+            anchor_state: Arc::new(Mutex::new(crate::hashing::state::AnchorState::new())),
+        }
+    }
+
     #[tokio::test]
     async fn mock_tool_executes() {
         let tool = MockTool {
             content: "hello".into(),
             should_error: false,
         };
-        let ctx = ToolContext::default();
+        let ctx = test_context();
         let result = tool.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(result.content, "hello");
         assert!(!result.is_error);
@@ -174,7 +188,7 @@ mod tests {
             content: "failed".into(),
             should_error: true,
         };
-        let ctx = ToolContext::default();
+        let ctx = test_context();
         let result = tool.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(result.content, "failed");
         assert!(result.is_error);
