@@ -198,6 +198,11 @@ pub enum LlmEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<LlmUsage>,
     },
+    /// An error at the LLM API/protocol layer (e.g., rate limiting, content
+    /// policy violation). This is distinct from transport-level errors
+    /// (broken connection, DNS failure) which propagate as `Err(...)` on
+    /// the stream item itself. The agent loop may retry transport errors
+    /// but typically treats protocol errors as terminal.
     #[serde(rename = "error")]
     Error { error: String },
 }

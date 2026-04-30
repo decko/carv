@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 use reqwest_eventsource::{retry::RetryPolicy, Event, EventSource};
 
 use crate::llm::provider::LlmProvider;
@@ -143,11 +143,28 @@ enum BlockState {
     },
 }
 
+/// Accumulated state for the `stream::unfold` SSE state machine.
+///
+/// A named struct rather than an anonymous tuple so that adding a field
+/// touches only the initialisation site and the one place the field is
+/// updated, not every `return Some(...)` site.
+// EventSource doesn't implement Debug, so we can't derive it here.
+struct StreamState {
+    es: EventSource,
+    blocks: HashMap<u32, BlockState>,
+    input_tok: Option<u32>,
+    output_tok: Option<u32>,
+    cache_read: Option<u32>,
+    cache_creation: Option<u32>,
+    done: bool,
+}
+
 // ---------------------------------------------------------------------------
 // AnthropicProvider
 // ---------------------------------------------------------------------------
 
-static ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
 /// Anthropic `/v1/messages` SSE client implementing [`LlmProvider`].
 ///
@@ -222,7 +239,7 @@ impl LlmProvider for AnthropicProvider {
             let thinking = if config.thinking {
                 Some(AnthropicThinking {
                     thinking_type: "enabled".to_string(),
-                    budget_tokens: config.thinking_budget.unwrap_or(1024),
+                    budget_tokens: config.thinking_budget.unwrap_or(8192),
                 })
             } else {
                 None
@@ -245,7 +262,7 @@ impl LlmProvider for AnthropicProvider {
             let builder = client
                 .post(format!("{}/v1/messages", ANTHROPIC_BASE_URL))
                 .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-version", ANTHROPIC_API_VERSION)
                 .json(&request);
 
             // EventSource adds Accept: text/event-stream and handles SSE parsing
@@ -255,56 +272,39 @@ impl LlmProvider for AnthropicProvider {
 
             // State machine: SSE events → LlmEvent stream
             //
-            // We use futures::stream::unfold to drive the EventSource and
-            // map raw SSE events into LlmEvent items.  Intermediate events
-            // (like `content_block_start` that just record metadata, or
-            // `ping`) loop without yielding until a user-visible event is
-            // ready.
-            use futures::stream;
+            // We use stream::unfold to drive the EventSource and map raw SSE
+            // events into LlmEvent items.  Intermediate events (like
+            // `content_block_start` that just record metadata, or `ping`)
+            // loop without yielding until a user-visible event is ready.
 
             let llm_stream = stream::unfold(
-                (
+                StreamState {
                     es,
-                    HashMap::<u32, BlockState>::new(),
-                    None,  // input_tokens
-                    None,  // output_tokens
-                    None,  // cache_read
-                    None,  // cache_creation
-                    false, // done
-                ),
-                move |(
-                    mut es,
-                    mut blocks,
-                    mut input_tok,
-                    mut output_tok,
-                    mut cache_read,
-                    mut cache_creation,
-                    mut done,
-                )| async move {
-                    if done {
+                    blocks: HashMap::new(),
+                    input_tok: None,
+                    output_tok: None,
+                    cache_read: None,
+                    cache_creation: None,
+                    done: false,
+                },
+                move |mut state| async move {
+                    if state.done {
                         return None;
                     }
 
                     loop {
-                        let item = match es.next().await {
+                        let item = match state.es.next().await {
                             Some(event) => event,
                             None => {
                                 // Stream ended without message_stop — synthesize Done
-                                let usage =
-                                    make_usage(input_tok, output_tok, cache_read, cache_creation);
-                                done = true;
-                                return Some((
-                                    Ok(LlmEvent::Done { usage }),
-                                    (
-                                        es,
-                                        blocks,
-                                        input_tok,
-                                        output_tok,
-                                        cache_read,
-                                        cache_creation,
-                                        done,
-                                    ),
-                                ));
+                                let usage = make_usage(
+                                    state.input_tok,
+                                    state.output_tok,
+                                    state.cache_read,
+                                    state.cache_creation,
+                                );
+                                state.done = true;
+                                return Some((Ok(LlmEvent::Done { usage }), state));
                             }
                         };
 
@@ -312,18 +312,10 @@ impl LlmProvider for AnthropicProvider {
                             Ok(Event::Open) => continue, // connection opened, no payload
                             Ok(Event::Message(msg)) => msg,
                             Err(e) => {
-                                done = true;
+                                state.done = true;
                                 return Some((
                                     Err(anyhow::anyhow!("SSE transport error: {e}")),
-                                    (
-                                        es,
-                                        blocks,
-                                        input_tok,
-                                        output_tok,
-                                        cache_read,
-                                        cache_creation,
-                                        done,
-                                    ),
+                                    state,
                                 ));
                             }
                         };
@@ -343,16 +335,16 @@ impl LlmProvider for AnthropicProvider {
 
                         match event {
                             AnthropicSseEvent::MessageStart { message } => {
-                                input_tok = message.usage.input_tokens;
-                                cache_read = message.usage.cache_read_input_tokens;
-                                cache_creation = message.usage.cache_creation_input_tokens;
+                                state.input_tok = message.usage.input_tokens;
+                                state.cache_read = message.usage.cache_read_input_tokens;
+                                state.cache_creation = message.usage.cache_creation_input_tokens;
                                 // continue looping — nothing to emit yet
                             }
                             AnthropicSseEvent::ContentBlockStart {
                                 index,
                                 content_block,
                             } => {
-                                let state = match &content_block.content {
+                                let block = match &content_block.content {
                                     ContentType::Text { .. } => BlockState::Text,
                                     ContentType::Thinking { .. } => BlockState::Thinking,
                                     ContentType::ToolUse { id, name, .. } => BlockState::ToolUse {
@@ -362,62 +354,34 @@ impl LlmProvider for AnthropicProvider {
                                     },
                                     ContentType::ToolResult { .. } => BlockState::Text,
                                 };
-                                blocks.insert(index, state);
+                                state.blocks.insert(index, block);
                             }
                             AnthropicSseEvent::ContentBlockDelta { index, delta } => {
                                 match delta {
                                     AnthropicDelta::Text { text } => {
-                                        return Some((
-                                            Ok(LlmEvent::Text { text }),
-                                            (
-                                                es,
-                                                blocks,
-                                                input_tok,
-                                                output_tok,
-                                                cache_read,
-                                                cache_creation,
-                                                done,
-                                            ),
-                                        ));
+                                        return Some((Ok(LlmEvent::Text { text }), state));
                                     }
                                     AnthropicDelta::Thinking { thinking } => {
-                                        return Some((
-                                            Ok(LlmEvent::Thinking { thinking }),
-                                            (
-                                                es,
-                                                blocks,
-                                                input_tok,
-                                                output_tok,
-                                                cache_read,
-                                                cache_creation,
-                                                done,
-                                            ),
-                                        ));
+                                        return Some((Ok(LlmEvent::Thinking { thinking }), state));
                                     }
                                     AnthropicDelta::InputJson { partial_json } => {
-                                        let key = index;
                                         if let Some(BlockState::ToolUse {
                                             id,
                                             name,
                                             ref mut json_acc,
-                                        }) = blocks.get_mut(&key)
+                                        }) = state.blocks.get_mut(&index)
                                         {
                                             json_acc.push_str(&partial_json);
+                                            let id = id.clone();
+                                            let name = Some(name.clone());
+                                            // NLL: borrow on state.blocks ends here
                                             return Some((
                                                 Ok(LlmEvent::ToolUseDelta {
-                                                    id: id.clone(),
-                                                    name: Some(name.clone()),
+                                                    id,
+                                                    name,
                                                     input_json: partial_json,
                                                 }),
-                                                (
-                                                    es,
-                                                    blocks,
-                                                    input_tok,
-                                                    output_tok,
-                                                    cache_read,
-                                                    cache_creation,
-                                                    done,
-                                                ),
+                                                state,
                                             ));
                                         }
                                         // ToolUseDelta for unknown index — ignore
@@ -430,21 +394,13 @@ impl LlmProvider for AnthropicProvider {
                             }
                             AnthropicSseEvent::ContentBlockStop { index } => {
                                 if let Some(BlockState::ToolUse { id, name, json_acc }) =
-                                    blocks.remove(&index)
+                                    state.blocks.remove(&index)
                                 {
                                     match serde_json::from_str(&json_acc) {
                                         Ok(input) => {
                                             return Some((
                                                 Ok(LlmEvent::ToolUseComplete { id, name, input }),
-                                                (
-                                                    es,
-                                                    blocks,
-                                                    input_tok,
-                                                    output_tok,
-                                                    cache_read,
-                                                    cache_creation,
-                                                    done,
-                                                ),
+                                                state,
                                             ));
                                         }
                                         Err(e) => {
@@ -454,15 +410,7 @@ impl LlmProvider for AnthropicProvider {
                                                         "Failed to parse tool input JSON: {e}"
                                                     ),
                                                 }),
-                                                (
-                                                    es,
-                                                    blocks,
-                                                    input_tok,
-                                                    output_tok,
-                                                    cache_read,
-                                                    cache_creation,
-                                                    done,
-                                                ),
+                                                state,
                                             ));
                                         }
                                     }
@@ -472,40 +420,25 @@ impl LlmProvider for AnthropicProvider {
                                 usage: delta_usage, ..
                             } => {
                                 // message_delta carries the final output token count
-                                output_tok = delta_usage.output_tokens;
+                                state.output_tok = delta_usage.output_tokens;
                             }
                             AnthropicSseEvent::MessageStop {} => {
-                                let usage =
-                                    make_usage(input_tok, output_tok, cache_read, cache_creation);
-                                done = true;
-                                return Some((
-                                    Ok(LlmEvent::Done { usage }),
-                                    (
-                                        es,
-                                        blocks,
-                                        input_tok,
-                                        output_tok,
-                                        cache_read,
-                                        cache_creation,
-                                        done,
-                                    ),
-                                ));
+                                let usage = make_usage(
+                                    state.input_tok,
+                                    state.output_tok,
+                                    state.cache_read,
+                                    state.cache_creation,
+                                );
+                                state.done = true;
+                                return Some((Ok(LlmEvent::Done { usage }), state));
                             }
                             AnthropicSseEvent::Error { error } => {
-                                done = true;
+                                state.done = true;
                                 return Some((
                                     Ok(LlmEvent::Error {
                                         error: format!("{}: {}", error.error_type, error.message),
                                     }),
-                                    (
-                                        es,
-                                        blocks,
-                                        input_tok,
-                                        output_tok,
-                                        cache_read,
-                                        cache_creation,
-                                        done,
-                                    ),
+                                    state,
                                 ));
                             }
                             AnthropicSseEvent::Ping {} => {
