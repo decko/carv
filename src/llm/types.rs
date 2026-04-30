@@ -38,6 +38,17 @@ pub enum ContentType {
         #[serde(default)]
         is_error: bool,
     },
+    /// Anthropic extended thinking content block.
+    ///
+    /// Present when `thinking.enabled` is set in the request. The initial
+    /// `thinking` text arrives via `content_block_start`; subsequent chunks
+    /// arrive as `thinking_delta` events.
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
 }
 
 /// Cache control annotation for prompt caching (currently only "ephemeral").

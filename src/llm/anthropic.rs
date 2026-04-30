@@ -1,5 +1,15 @@
 //! Anthropic `/v1/messages` API — request (Serialize), SSE (Deserialize), tool mapping.
-use crate::llm::types::{ContentBlock, Message, ToolDef};
+use std::collections::HashMap;
+use std::time::Duration;
+
+use futures::StreamExt;
+use reqwest_eventsource::{retry::RetryPolicy, Event, EventSource};
+
+use crate::llm::provider::LlmProvider;
+use crate::llm::types::{
+    ContentBlock, ContentType, LlmEvent, LlmStream, LlmStreamFuture, LlmUsage, Message,
+    RequestConfig, Role, ToolDef,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +49,10 @@ pub struct AnthropicUsageSummary {
     pub input_tokens: Option<u32>,
     #[serde(default)]
     pub output_tokens: Option<u32>,
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u32>,
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnthropicMessageStart {
@@ -88,6 +102,454 @@ pub enum AnthropicSseEvent {
 pub fn to_anthropic_tools(tools: &[ToolDef]) -> Vec<serde_json::Value> {
     tools.iter().map(|t| serde_json::json!({"name": t.name, "description": t.description, "input_schema": t.input_schema})).collect()
 }
+
+// ---------------------------------------------------------------------------
+// Retry policy — we handle retry in the agent loop, not at the SSE layer
+// ---------------------------------------------------------------------------
+
+/// Retry policy that never retries. The agent loop handles retry with
+/// exponential backoff; reconnecting at the SSE layer would create
+/// duplicate requests.
+struct NoRetry;
+
+impl RetryPolicy for NoRetry {
+    fn retry(
+        &self,
+        _error: &reqwest_eventsource::Error,
+        _last: Option<(usize, Duration)>,
+    ) -> Option<Duration> {
+        None
+    }
+
+    fn set_reconnection_time(&mut self, _duration: Duration) {}
+}
+
+// ---------------------------------------------------------------------------
+// SSE → LlmEvent state machine types
+// ---------------------------------------------------------------------------
+
+/// Per-block tracking during SSE streaming.
+///
+/// Anthropic content blocks arrive in three phases: `content_block_start`
+/// (type + metadata), `content_block_delta` (payload chunks), and
+/// `content_block_stop` (block finished). For `tool_use` blocks, partial
+/// JSON fragments are accumulated and then parsed into the complete
+/// `serde_json::Value` on `content_block_stop`.
+#[derive(Debug)]
+enum BlockState {
+    Text,
+    Thinking,
+    ToolUse {
+        id: String,
+        name: String,
+        json_acc: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// AnthropicProvider
+// ---------------------------------------------------------------------------
+
+static ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+
+/// Anthropic `/v1/messages` SSE client implementing [`LlmProvider`].
+///
+/// Streams chat completions with tool use, prompt caching, and extended
+/// thinking support. Translates Anthropic's SSE wire protocol into the
+/// unified [`LlmEvent`] stream consumed by the agent loop.
+pub struct AnthropicProvider {
+    api_key: String,
+    model: String,
+    client: reqwest::Client,
+}
+
+impl AnthropicProvider {
+    pub fn new(api_key: String, model: String) -> Self {
+        Self {
+            api_key,
+            model,
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the system prompt from the messages list for Anthropic's
+/// top-level `system` field.
+///
+/// Anthropic places the system prompt in a separate `system` field on the
+/// request, not in the `messages` array. This helper locates the first
+/// `Role::System` message, removes it, and converts it to the wire format.
+fn extract_system(mut messages: Vec<Message>) -> (Option<AnthropicSystem>, Vec<Message>) {
+    if let Some(idx) = messages.iter().position(|m| m.role == Role::System) {
+        let system_msg = messages.remove(idx);
+        // Use String variant for single text block, Blocks for everything else
+        let system = system_msg.content;
+        if system.len() == 1 {
+            if let ContentType::Text { text } = &system[0].content {
+                return (Some(AnthropicSystem::String(text.clone())), messages);
+            }
+        }
+        (Some(AnthropicSystem::Blocks(system)), messages)
+    } else {
+        (None, messages)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LlmProvider implementation
+// ---------------------------------------------------------------------------
+
+impl LlmProvider for AnthropicProvider {
+    fn stream_chat(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDef],
+        config: &RequestConfig,
+    ) -> LlmStreamFuture<'_> {
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let client = self.client.clone();
+        let messages = messages.to_vec();
+        let tools = tools.to_vec();
+        let config = config.clone();
+
+        Box::pin(async move {
+            // Separate system prompt for Anthropic top-level `system` field
+            let (system, messages) = extract_system(messages);
+
+            // Build extended thinking config if enabled
+            let thinking = if config.thinking {
+                Some(AnthropicThinking {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: config.thinking_budget.unwrap_or(1024),
+                })
+            } else {
+                None
+            };
+
+            let request = AnthropicRequest {
+                model: model.clone(),
+                max_tokens: config.max_tokens,
+                messages,
+                system,
+                tools: to_anthropic_tools(&tools),
+                stream: true,
+                thinking,
+                temperature: config.temperature,
+                top_p: config.top_p,
+                stop_sequences: config.stop_sequences.clone(),
+            };
+
+            // Build the HTTP request
+            let builder = client
+                .post(format!("{}/v1/messages", ANTHROPIC_BASE_URL))
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&request);
+
+            // EventSource adds Accept: text/event-stream and handles SSE parsing
+            let mut es = EventSource::new(builder)
+                .map_err(|e| anyhow::anyhow!("Failed to create SSE event source: {e:?}"))?;
+            es.set_retry_policy(Box::new(NoRetry));
+
+            // State machine: SSE events → LlmEvent stream
+            //
+            // We use futures::stream::unfold to drive the EventSource and
+            // map raw SSE events into LlmEvent items.  Intermediate events
+            // (like `content_block_start` that just record metadata, or
+            // `ping`) loop without yielding until a user-visible event is
+            // ready.
+            use futures::stream;
+
+            let llm_stream = stream::unfold(
+                (
+                    es,
+                    HashMap::<u32, BlockState>::new(),
+                    None,  // input_tokens
+                    None,  // output_tokens
+                    None,  // cache_read
+                    None,  // cache_creation
+                    false, // done
+                ),
+                move |(
+                    mut es,
+                    mut blocks,
+                    mut input_tok,
+                    mut output_tok,
+                    mut cache_read,
+                    mut cache_creation,
+                    mut done,
+                )| async move {
+                    if done {
+                        return None;
+                    }
+
+                    loop {
+                        let item = match es.next().await {
+                            Some(event) => event,
+                            None => {
+                                // Stream ended without message_stop — synthesize Done
+                                let usage =
+                                    make_usage(input_tok, output_tok, cache_read, cache_creation);
+                                done = true;
+                                return Some((
+                                    Ok(LlmEvent::Done { usage }),
+                                    (
+                                        es,
+                                        blocks,
+                                        input_tok,
+                                        output_tok,
+                                        cache_read,
+                                        cache_creation,
+                                        done,
+                                    ),
+                                ));
+                            }
+                        };
+
+                        let msg = match item {
+                            Ok(Event::Open) => continue, // connection opened, no payload
+                            Ok(Event::Message(msg)) => msg,
+                            Err(e) => {
+                                done = true;
+                                return Some((
+                                    Err(anyhow::anyhow!("SSE transport error: {e}")),
+                                    (
+                                        es,
+                                        blocks,
+                                        input_tok,
+                                        output_tok,
+                                        cache_read,
+                                        cache_creation,
+                                        done,
+                                    ),
+                                ));
+                            }
+                        };
+
+                        let event: AnthropicSseEvent = match serde_json::from_str(&msg.data) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                // Unknown or malformed event — log and skip
+                                tracing::warn!(
+                                    event_type = %msg.event,
+                                    error = %e,
+                                    "Skipping unparseable SSE event"
+                                );
+                                continue;
+                            }
+                        };
+
+                        match event {
+                            AnthropicSseEvent::MessageStart { message } => {
+                                input_tok = message.usage.input_tokens;
+                                cache_read = message.usage.cache_read_input_tokens;
+                                cache_creation = message.usage.cache_creation_input_tokens;
+                                // continue looping — nothing to emit yet
+                            }
+                            AnthropicSseEvent::ContentBlockStart {
+                                index,
+                                content_block,
+                            } => {
+                                let state = match &content_block.content {
+                                    ContentType::Text { .. } => BlockState::Text,
+                                    ContentType::Thinking { .. } => BlockState::Thinking,
+                                    ContentType::ToolUse { id, name, .. } => BlockState::ToolUse {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        json_acc: String::new(),
+                                    },
+                                    ContentType::ToolResult { .. } => BlockState::Text,
+                                };
+                                blocks.insert(index, state);
+                            }
+                            AnthropicSseEvent::ContentBlockDelta { index, delta } => {
+                                match delta {
+                                    AnthropicDelta::Text { text } => {
+                                        return Some((
+                                            Ok(LlmEvent::Text { text }),
+                                            (
+                                                es,
+                                                blocks,
+                                                input_tok,
+                                                output_tok,
+                                                cache_read,
+                                                cache_creation,
+                                                done,
+                                            ),
+                                        ));
+                                    }
+                                    AnthropicDelta::Thinking { thinking } => {
+                                        return Some((
+                                            Ok(LlmEvent::Thinking { thinking }),
+                                            (
+                                                es,
+                                                blocks,
+                                                input_tok,
+                                                output_tok,
+                                                cache_read,
+                                                cache_creation,
+                                                done,
+                                            ),
+                                        ));
+                                    }
+                                    AnthropicDelta::InputJson { partial_json } => {
+                                        let key = index;
+                                        if let Some(BlockState::ToolUse {
+                                            id,
+                                            name,
+                                            ref mut json_acc,
+                                        }) = blocks.get_mut(&key)
+                                        {
+                                            json_acc.push_str(&partial_json);
+                                            return Some((
+                                                Ok(LlmEvent::ToolUseDelta {
+                                                    id: id.clone(),
+                                                    name: Some(name.clone()),
+                                                    input_json: partial_json,
+                                                }),
+                                                (
+                                                    es,
+                                                    blocks,
+                                                    input_tok,
+                                                    output_tok,
+                                                    cache_read,
+                                                    cache_creation,
+                                                    done,
+                                                ),
+                                            ));
+                                        }
+                                        // ToolUseDelta for unknown index — ignore
+                                    }
+                                    AnthropicDelta::Signature { .. } => {
+                                        // Signature deltas accumulate internally;
+                                        // the agent loop doesn't need them.
+                                    }
+                                }
+                            }
+                            AnthropicSseEvent::ContentBlockStop { index } => {
+                                if let Some(BlockState::ToolUse { id, name, json_acc }) =
+                                    blocks.remove(&index)
+                                {
+                                    match serde_json::from_str(&json_acc) {
+                                        Ok(input) => {
+                                            return Some((
+                                                Ok(LlmEvent::ToolUseComplete { id, name, input }),
+                                                (
+                                                    es,
+                                                    blocks,
+                                                    input_tok,
+                                                    output_tok,
+                                                    cache_read,
+                                                    cache_creation,
+                                                    done,
+                                                ),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            return Some((
+                                                Ok(LlmEvent::Error {
+                                                    error: format!(
+                                                        "Failed to parse tool input JSON: {e}"
+                                                    ),
+                                                }),
+                                                (
+                                                    es,
+                                                    blocks,
+                                                    input_tok,
+                                                    output_tok,
+                                                    cache_read,
+                                                    cache_creation,
+                                                    done,
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+                                blocks.remove(&index);
+                            }
+                            AnthropicSseEvent::MessageDelta {
+                                usage: delta_usage, ..
+                            } => {
+                                // message_delta carries the final output token count
+                                output_tok = delta_usage.output_tokens;
+                            }
+                            AnthropicSseEvent::MessageStop {} => {
+                                let usage =
+                                    make_usage(input_tok, output_tok, cache_read, cache_creation);
+                                done = true;
+                                return Some((
+                                    Ok(LlmEvent::Done { usage }),
+                                    (
+                                        es,
+                                        blocks,
+                                        input_tok,
+                                        output_tok,
+                                        cache_read,
+                                        cache_creation,
+                                        done,
+                                    ),
+                                ));
+                            }
+                            AnthropicSseEvent::Error { error } => {
+                                done = true;
+                                return Some((
+                                    Ok(LlmEvent::Error {
+                                        error: format!("{}: {}", error.error_type, error.message),
+                                    }),
+                                    (
+                                        es,
+                                        blocks,
+                                        input_tok,
+                                        output_tok,
+                                        cache_read,
+                                        cache_creation,
+                                        done,
+                                    ),
+                                ));
+                            }
+                            AnthropicSseEvent::Ping {} => {
+                                // Keep-alive pings — ignore
+                            }
+                        }
+                        // If we reach here, the event didn't produce a stream item;
+                        // continue the inner loop.
+                    }
+                },
+            );
+
+            Ok(Box::pin(llm_stream) as LlmStream)
+        })
+    }
+}
+
+/// Synthesize an [`LlmUsage`] from the fields accumulated across
+/// `message_start` and `message_delta`.
+fn make_usage(
+    input: Option<u32>,
+    output: Option<u32>,
+    cache_read: Option<u32>,
+    cache_create: Option<u32>,
+) -> Option<LlmUsage> {
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(LlmUsage {
+        input_tokens: input.unwrap_or(0),
+        output_tokens: output.unwrap_or(0),
+        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_create,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[rustfmt::skip]
 #[cfg(test)]
 mod tests {
@@ -145,5 +607,100 @@ mod tests {
             assert_eq!(index, 1);
             assert_eq!(delta, AnthropicDelta::Text { text: "Hello world".into() });
         } other => panic!("expected ContentBlockDelta, got {other:?}"), }
+    }
+
+    // -- extract_system tests --
+
+    #[test]
+    fn test_extract_system_single_text() {
+        let messages = vec![
+            Message::system("You are a helpful assistant."),
+            Message::user("hello"),
+        ];
+        let (system, rest) = extract_system(messages);
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].role, Role::User);
+        match system {
+            Some(AnthropicSystem::String(s)) => {
+                assert_eq!(s, "You are a helpful assistant.");
+            }
+            other => panic!("expected AnthropicSystem::String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_extract_system_no_system() {
+        let messages = vec![
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ];
+        let (system, rest) = extract_system(messages);
+        assert!(system.is_none());
+        assert_eq!(rest.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_system_multi_block() {
+        let mut system_msg = Message::system("hello");
+        system_msg.content.push(ContentBlock::text("world"));
+        let messages = vec![system_msg, Message::user("q")];
+        let (system, rest) = extract_system(messages);
+        assert_eq!(rest.len(), 1);
+        match system {
+            Some(AnthropicSystem::Blocks(blocks)) => {
+                assert_eq!(blocks.len(), 2);
+            }
+            other => panic!("expected AnthropicSystem::Blocks, got {other:?}"),
+        }
+    }
+
+    // -- make_usage tests --
+
+    #[test]
+    fn test_make_usage_all_fields() {
+        let usage = make_usage(Some(100), Some(50), Some(20), Some(10));
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 50);
+        assert_eq!(u.cache_read_tokens, Some(20));
+        assert_eq!(u.cache_creation_tokens, Some(10));
+    }
+
+    #[test]
+    fn test_make_usage_no_data() {
+        assert!(make_usage(None, None, None, None).is_none());
+    }
+
+    #[test]
+    fn test_make_usage_partial() {
+        let usage = make_usage(Some(50), None, None, None).unwrap();
+        assert_eq!(usage.input_tokens, 50);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    // -- AnthropicUsageSummary cache fields --
+
+    #[test]
+    fn test_usage_summary_with_cache_fields() {
+        let json = r#"{
+            "input_tokens": 500,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 300,
+            "cache_creation_input_tokens": 100
+        }"#;
+        let usage: AnthropicUsageSummary = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.input_tokens, Some(500));
+        assert_eq!(usage.output_tokens, Some(0));
+        assert_eq!(usage.cache_read_input_tokens, Some(300));
+        assert_eq!(usage.cache_creation_input_tokens, Some(100));
+    }
+
+    #[test]
+    fn test_usage_summary_without_cache_fields() {
+        let json = r#"{"input_tokens": 100, "output_tokens": 0}"#;
+        let usage: AnthropicUsageSummary = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.input_tokens, Some(100));
+        assert!(usage.cache_read_input_tokens.is_none());
+        assert!(usage.cache_creation_input_tokens.is_none());
     }
 }
