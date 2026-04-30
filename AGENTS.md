@@ -289,6 +289,27 @@ Tree-sitter query files (`.scm`) are **not Rust** — they are S-expression patt
 
 These files are a distinct review category from Rust code. Don't review them like logic — review them like templates against a known grammar.
 
+## Review Depth Standards
+
+The reviewer (rust-reviewer) must go beyond mechanical DoD checks. These apply to all PRs:
+
+### For all PRs
+- Read every line of the diff. Do not skim.
+- Flag: redundant `#[serde(default)]` on `Option<T>` fields.
+- Flag: missing `PartialEq`/`Debug` derives on types used in test assertions or stored in collections.
+- Flag: `#[rustfmt::skip]` without a comment explaining why.
+- Map every public type/function to its covering test(s); flag any with zero coverage.
+
+### For serde-heavy PRs
+- Verify every `#[serde(rename)]` matches the actual wire-level key in the provider's API reference.
+- Verify one deserialization test per tagged-enum variant.
+- Verify round-trip with absent optional fields.
+- Verify `#[serde(untagged)]` variant order is safe.
+
+### For provider/wire-type PRs
+- Cross-reference request/response fields against the provider's API reference.
+- Test the trickiest wire format feature (e.g., Anthropic's top-level `usage` in `message_delta`, not nested inside `delta`).
+
 ## Dependencies to Know
 
 - `tokio` — multi-threaded runtime, process spawning, channels

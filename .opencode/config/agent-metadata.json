@@ -16,12 +16,12 @@
     "rust-coder": {
       "type": "general",
       "path": ".opencode/subagents/rust-coder.md",
-      "description": "Rust code generation specialist with cargo verification"
+      "description": "Rust code generation specialist. Follows project serde conventions, writes one test per tagged-enum variant, avoids redundant annotations, and verifies with cargo."
     },
     "rust-reviewer": {
       "type": "general",
       "path": ".opencode/subagents/rust-reviewer.md",
-      "description": "Rust code review specialist for safety and performance"
+      "description": "Rust code review specialist. Flags redundant serde annotations, missing derives, untested enum variants, and wire format mismatches. Checks test coverage per public type and spec compliance before verifying the DoD checklist."
     },
     "rust-tester": {
       "type": "general",
