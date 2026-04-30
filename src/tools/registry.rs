@@ -1,12 +1,6 @@
-//! Tool registry — [`ToolRegistry`] with deny-list filtering.
+//! Thread-safe tool registry with deny-list filtering.
 //!
-//! Tools are registered by name, filtered by `--disallowed-tools`, and exposed
-//! to the LLM provider as a list of [`ToolDef`] structs for API requests.
-//!
-//! The registry stores tools in an `Arc<Mutex<HashMap<String, Arc<dyn Tool>>>>`
-//! so it can be shared across threads (agent loop + LSP callbacks).  Deny-listed
-//! tools are kept in the map but hidden from [`tool_defs`] — they can be
-//! re-enabled by removing their name from the deny set.
+//! See [`ToolRegistry`] for details.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -25,8 +19,15 @@ use crate::tools::traits::Tool;
 /// Tools are registered by name, filtered by `--disallowed-tools`, and exposed
 /// to the LLM provider as a list of [`ToolDef`] structs for API requests.
 pub struct ToolRegistry {
-    /// All registered tools, keyed by name. Wrapped in `Arc<Mutex<>>` for
-    /// thread-safe access from the agent loop and LSP callbacks.
+    /// All registered tools, keyed by name.
+    ///
+    /// Wrapped in `Arc<Mutex<>>` so that `&self` methods (`get`, `tool_defs`,
+    /// `visible_count`) can be called concurrently from multiple async tasks
+    /// (agent loop, LSP callbacks).  `register()` takes `&mut self` because
+    /// dynamic tool registration is an infrequent mutation — callers that
+    /// need shared mutable access can wrap the entire registry in
+    /// `Arc<Mutex<ToolRegistry>>`, and the inner `Mutex` still allows
+    /// concurrent reads when the outer lock is held for writes.
     tools: Arc<Mutex<HashMap<String, Arc<dyn Tool>>>>,
     /// Set of tool names to hide from the LLM.
     disallowed: HashSet<String>,
@@ -35,10 +36,13 @@ pub struct ToolRegistry {
 impl std::fmt::Debug for ToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let tools = self.tools.lock().expect("tool registry lock poisoned");
-        let names: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
+        let visible = tools
+            .keys()
+            .filter(|name| !self.disallowed.contains(name.as_str()))
+            .count();
         f.debug_struct("ToolRegistry")
-            .field("tool_count", &names.len())
-            .field("visible_count", &self.visible_count())
+            .field("tool_count", &tools.len())
+            .field("visible_count", &visible)
             .field("disallowed", &self.disallowed)
             .finish_non_exhaustive()
     }
@@ -81,7 +85,7 @@ impl ToolRegistry {
     /// List all tool definitions visible to the LLM (disallowed tools excluded).
     pub fn tool_defs(&self) -> Vec<ToolDef> {
         let tools = self.tools.lock().expect("tool registry lock poisoned");
-        tools
+        let mut defs: Vec<ToolDef> = tools
             .iter()
             .filter(|(name, _)| !self.disallowed.contains(name.as_str()))
             .map(|(_, tool)| ToolDef {
@@ -89,7 +93,9 @@ impl ToolRegistry {
                 description: tool.description().to_owned(),
                 input_schema: tool.parameters_schema(),
             })
-            .collect()
+            .collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
     }
 
     /// Number of tools visible to the LLM (after deny-list filtering).
@@ -101,7 +107,7 @@ impl ToolRegistry {
             .count()
     }
 
-    /// Register a new tool (for testing / dynamic extension).
+    /// Register a new tool dynamically.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let name = tool.name().to_owned();
         debug!(tool = %name, "registering tool (dynamic)");
