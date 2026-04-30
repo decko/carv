@@ -45,13 +45,9 @@ pub struct AnthropicRequest {
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnthropicUsageSummary {
-    #[serde(default)]
     pub input_tokens: Option<u32>,
-    #[serde(default)]
     pub output_tokens: Option<u32>,
-    #[serde(default)]
     pub cache_read_input_tokens: Option<u32>,
-    #[serde(default)]
     pub cache_creation_input_tokens: Option<u32>,
 }
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +81,7 @@ pub struct AnthropicError {
     pub error_type: String,
     pub message: String,
 }
+// Keep each variant on one line for readability against the Anthropic SSE spec
 #[rustfmt::skip]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
@@ -232,7 +229,7 @@ impl LlmProvider for AnthropicProvider {
             };
 
             let request = AnthropicRequest {
-                model: model.clone(),
+                model,
                 max_tokens: config.max_tokens,
                 messages,
                 system,
@@ -470,7 +467,6 @@ impl LlmProvider for AnthropicProvider {
                                         }
                                     }
                                 }
-                                blocks.remove(&index);
                             }
                             AnthropicSseEvent::MessageDelta {
                                 usage: delta_usage, ..
@@ -550,6 +546,7 @@ fn make_usage(
 // Tests
 // ---------------------------------------------------------------------------
 
+// Keep test definitions compact and scannable against the SSE spec
 #[rustfmt::skip]
 #[cfg(test)]
 mod tests {
@@ -607,6 +604,63 @@ mod tests {
             assert_eq!(index, 1);
             assert_eq!(delta, AnthropicDelta::Text { text: "Hello world".into() });
         } other => panic!("expected ContentBlockDelta, got {other:?}"), }
+    }
+
+    #[test]
+    fn test_content_block_start_deserialization() {
+        // ContentBlockStart for a thinking block with signature
+        let json = r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"Let me think about this","signature":"sig_abc"}}"#;
+        let event: AnthropicSseEvent = serde_json::from_str(json).unwrap();
+        match event { AnthropicSseEvent::ContentBlockStart { index, content_block } => {
+            assert_eq!(index, 0);
+            assert_eq!(content_block.content, ContentType::Thinking { thinking: "Let me think about this".into(), signature: "sig_abc".into() });
+        } other => panic!("expected ContentBlockStart, got {other:?}"), }
+    }
+
+    #[test]
+    fn test_content_block_stop_deserialization() {
+        let event: AnthropicSseEvent = serde_json::from_str(r#"{"type":"content_block_stop","index":2}"#).unwrap();
+        match event { AnthropicSseEvent::ContentBlockStop { index } => {
+            assert_eq!(index, 2);
+        } other => panic!("expected ContentBlockStop, got {other:?}"), }
+    }
+
+    #[test]
+    fn test_message_delta_deserialization() {
+        // message_delta carries usage at the top level alongside delta,
+        // not nested inside delta — this is the trickiest wire format.
+        let json = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}}"#;
+        let event: AnthropicSseEvent = serde_json::from_str(json).unwrap();
+        match event { AnthropicSseEvent::MessageDelta { delta, usage } => {
+            assert_eq!(delta.stop_reason, Some("end_turn".into()));
+            assert!(delta.stop_sequence.is_none());
+            assert_eq!(usage.output_tokens, Some(42));
+            assert!(usage.input_tokens.is_none());
+        } other => panic!("expected MessageDelta, got {other:?}"), }
+    }
+
+    #[test]
+    fn test_message_stop_deserialization() {
+        let event: AnthropicSseEvent = serde_json::from_str(r#"{"type":"message_stop"}"#).unwrap();
+        match event { AnthropicSseEvent::MessageStop {} => {},
+            other => panic!("expected MessageStop, got {other:?}"), }
+    }
+
+    #[test]
+    fn test_error_sse_event_deserialization() {
+        let json = r#"{"type":"error","error":{"type":"api_error","message":"Internal server error"}}"#;
+        let event: AnthropicSseEvent = serde_json::from_str(json).unwrap();
+        match event { AnthropicSseEvent::Error { error } => {
+            assert_eq!(error.error_type, "api_error");
+            assert_eq!(error.message, "Internal server error");
+        } other => panic!("expected Error, got {other:?}"), }
+    }
+
+    #[test]
+    fn test_ping_sse_event_deserialization() {
+        let event: AnthropicSseEvent = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
+        match event { AnthropicSseEvent::Ping {} => {},
+            other => panic!("expected Ping, got {other:?}"), }
     }
 
     // -- extract_system tests --

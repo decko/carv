@@ -387,6 +387,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_content_type_thinking_roundtrip() {
+        let ct = ContentType::Thinking {
+            thinking: "Let me reason about this.".to_string(),
+            signature: "sig_abc123".to_string(),
+        };
+        let json = serde_json::to_value(&ct).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["thinking"], "Let me reason about this.");
+        assert_eq!(json["signature"], "sig_abc123");
+
+        // Round-trip: serialize then deserialize
+        let deserialized: ContentType = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, ct);
+    }
+
+    #[test]
+    fn test_content_type_thinking_no_signature() {
+        // signature has #[serde(default)], so it can be absent
+        let json = r#"{"type":"thinking","thinking":"A quick thought"}"#;
+        let ct: ContentType = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            ct,
+            ContentType::Thinking {
+                thinking: "A quick thought".to_string(),
+                signature: String::new(),
+            }
+        );
+    }
+
     // -- ToolDef tests --
 
     #[test]
