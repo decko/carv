@@ -70,6 +70,23 @@ This subagent is invoked by `rust-expert` for:
 - [ ] **DRY**: No duplicated logic
 - [ ] **Module structure**: Clear separation of concerns
 
+### 7. Serde & Wire Types
+
+- [ ] **No redundant `#[serde(default)]`**: Serde already treats `Option<T>` as `None` when the field is absent. The annotation is a no-op on `Option` fields — flag it.
+- [ ] **Wire format accuracy**: Every `#[serde(rename)]` and `#[serde(rename_all)]` must match the actual wire-level key in the provider's API reference. Verify against the spec or API docs.
+- [ ] **Variant coverage**: Every variant in a `#[serde(tag = "type")]` enum must have at least one deserialization test. No variant is "too simple to test" — bugs hide in the untested.
+- [ ] **Absent-field round-trip**: When a type is reused for deserialization in a different context (e.g., `ContentBlock` used in both request building and SSE parsing), verify that absent optional fields (`cache_control`, `stop_sequences`, etc.) deserialize without error.
+- [ ] **`#[rustfmt::skip]`**: Questioned on every occurrence. The reviewer must ask: is the skip shrinking a 3-line enum into 1 line for readability, or is it hiding sloppy formatting? No skip without a comment.
+- [ ] **`#[serde(flatten)]` correctness**: Verify the flatten target's wire shape matches expectations with a round-trip test. Flattened structs can silently swallow misnamed fields.
+- [ ] **`#[serde(untagged)]` ordering**: Variants are tried in declaration order. For `String` before `Vec<ContentBlock>`, a string will never accidentally match the vec variant — verify the order is safe.
+- [ ] **Derive hygiene**: Types used in test assertions need `PartialEq`. Types stored in collections need `Eq`, `Hash`. Types logged or passed across threads need `Debug`. Missing derives cause downstream pain.
+
+### 8. Test Coverage Depth (beyond "tests exist")
+
+- [ ] **No untested public items**: Cross-reference `pub` types/functions against the test module. Every `pub fn`, `pub struct`, and `pub enum` variant must appear in at least one test. Flag any with zero coverage.
+- [ ] **The trickiest wire feature**: Identify the most unusual field in the API format and test it specifically (e.g., Anthropic's top-level `usage` in `message_delta`, not nested inside `delta`).
+- [ ] **Edge cases**: Empty arrays, null fields, missing required fields, unknown variants.
+
 ## Review Output Format
 
 ```markdown

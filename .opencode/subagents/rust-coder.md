@@ -118,6 +118,23 @@ If `cargo clippy` fails, fix warnings. If `cargo test` fails, fix tests or the c
 - Avoid unnecessary clones in hot paths
 - Zero-copy parsing where feasible (tree-sitter byte ranges)
 
+### Serde & Wire Types
+
+- Serialization-only types: derive `Serialize` only (request types). Deserialization-only: `Deserialize` only (SSE events). Don't derive both unless needed.
+- Wire format accuracy: every `#[serde(rename)]` must quote the literal key from the API reference. No guessing.
+- `#[serde(default)]` is only needed on non-`Option` fields with sensible defaults. On `Option<T>` it's redundant (serde defaults Option to None).
+- `#[serde(flatten)]`: always include a round-trip test proving the wire shape is correct.
+- `#[serde(untagged)]`: variant order matters. The first variant that deserializes wins. Document the order choice in a comment.
+- Tagged enums (`#[serde(tag = "type")]`): every variant gets at least one deserialization test.
+
+### Test Coverage Standards
+
+- **Tagged enums**: at least one deserialization test per variant.
+- **Optional fields**: at least one test with all skippable fields absent.
+- **Trickiest wire feature**: identify and test the most unusual field placement (e.g., fields at the top level vs. nested).
+- **Edge cases**: empty arrays, null values, missing required fields, unknown variants.
+- **Round-trip**: serde types that are both serialized and deserialized need a `serde_json::from_str(serde_json::to_string(&x).unwrap()).unwrap()` round-trip test.
+
 ### Tree-sitter Integration
 - Handle parse failures gracefully (fall back to raw read)
 - Cache parsed trees per-file, invalidate on modification
