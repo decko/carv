@@ -7,14 +7,17 @@ use reqwest_eventsource::{retry::RetryPolicy, Event, EventSource};
 
 use crate::llm::provider::LlmProvider;
 use crate::llm::types::{
-    ContentBlock, ContentType, LlmEvent, LlmStream, LlmStreamFuture, LlmUsage, Message,
-    RequestConfig, Role, ToolDef,
+    CacheControl, ContentBlock, ContentType, LlmEvent, LlmStream, LlmStreamFuture, LlmUsage,
+    Message, RequestConfig, Role, ToolDef,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum AnthropicSystem {
+    /// Text-only system prompt.  No longer emitted by `extract_system`
+    /// (which always returns `Blocks` with cache_control), but kept for
+    /// serialization compatibility in tests that construct requests directly.
     String(String),
     Blocks(Vec<ContentBlock>),
 }
@@ -96,17 +99,34 @@ pub enum AnthropicSseEvent {
     #[serde(rename = "ping")] Ping {},
 }
 
+/// Convert provider-agnostic [`ToolDef`]s to Anthropic's tool wire format.
+///
+/// Each tool is annotated with `cache_control: {"type": "ephemeral"}` so the
+/// tool definitions are eligible for prompt caching across turns.
 pub fn to_anthropic_tools(tools: &[ToolDef]) -> Vec<serde_json::Value> {
-    tools.iter().map(|t| serde_json::json!({"name": t.name, "description": t.description, "input_schema": t.input_schema})).collect()
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+                "cache_control": {"type": "ephemeral"}
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
-// Retry policy — we handle retry in the agent loop, not at the SSE layer
+// Retry policy + backoff helpers
 // ---------------------------------------------------------------------------
 
-/// Retry policy that never retries. The agent loop handles retry with
-/// exponential backoff; reconnecting at the SSE layer would create
-/// duplicate requests.
+/// Retry policy that never retries at the SSE transport layer.
+///
+/// Retry for transient HTTP errors (429, 529) is handled inside the
+/// `stream::unfold` closure by rebuilding the `EventSource` from stored
+/// request state. Letting `EventSource` auto-reconnect would create
+/// duplicate requests and bypass our exponential backoff timing.
 struct NoRetry;
 
 impl RetryPolicy for NoRetry {
@@ -119,6 +139,36 @@ impl RetryPolicy for NoRetry {
     }
 
     fn set_reconnection_time(&mut self, _duration: Duration) {}
+}
+
+/// Maximum number of retry attempts for transient HTTP errors (429, 529).
+const MAX_RETRIES: u32 = 3;
+
+/// Backoff base duration — first retry after 1s, then 2s, then 4s.
+const BACKOFF_BASE_MS: u64 = 1000;
+
+/// Check whether an SSE transport error is retryable.
+///
+/// Retryable errors are HTTP 429 (rate limited) and 529 (overloaded).
+/// All other transport errors (connection refused, DNS failure, TLS) are
+/// treated as terminal — they won't resolve within a short backoff window.
+///
+/// Uses `Debug` formatting to inspect the error representation, since
+/// `reqwest_eventsource::Error` does not expose HTTP status codes
+/// through its public API.
+fn is_retryable(error: &impl std::fmt::Debug) -> bool {
+    let msg = format!("{error:?}");
+    msg.contains("429") || msg.contains("529")
+}
+
+/// Compute the backoff duration for the given retry attempt.
+///
+/// Exponential: base * 2^attempt.  Attempt 0 → 1s, attempt 1 → 2s,
+/// attempt 2 → 4s.  Capped at a reasonable upper bound to avoid hanging
+/// the agent loop on pathological cases.
+fn backoff_duration(attempt: u32) -> Duration {
+    let ms = BACKOFF_BASE_MS * 2u64.pow(attempt.min(5));
+    Duration::from_millis(ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +207,11 @@ struct StreamState {
     cache_read: Option<u32>,
     cache_creation: Option<u32>,
     done: bool,
+    /// Cached request info for rebuilding the EventSource on retry.
+    api_key: String,
+    request: AnthropicRequest,
+    retry_count: u32,
+    max_retries: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,15 +252,20 @@ impl AnthropicProvider {
 /// Anthropic places the system prompt in a separate `system` field on the
 /// request, not in the `messages` array. This helper locates the first
 /// `Role::System` message, removes it, and converts it to the wire format.
+///
+/// Every content block is annotated with `cache_control: {"type": "ephemeral"}`
+/// to enable prompt caching. Without this, re-sending the system prompt
+/// every turn costs 10-25x more in input tokens.
 fn extract_system(mut messages: Vec<Message>) -> (Option<AnthropicSystem>, Vec<Message>) {
     if let Some(idx) = messages.iter().position(|m| m.role == Role::System) {
         let system_msg = messages.remove(idx);
-        // Use String variant for single text block, Blocks for everything else
-        let system = system_msg.content;
-        if system.len() == 1 {
-            if let ContentType::Text { text } = &system[0].content {
-                return (Some(AnthropicSystem::String(text.clone())), messages);
-            }
+        // Always emit Blocks so we can annotate each block with cache_control.
+        // The String variant cannot carry cache_control annotations.
+        let mut system = system_msg.content;
+        for block in &mut system {
+            block.cache_control = Some(CacheControl {
+                cache_type: "ephemeral".to_string(),
+            });
         }
         (Some(AnthropicSystem::Blocks(system)), messages)
     } else {
@@ -286,167 +346,226 @@ impl LlmProvider for AnthropicProvider {
                     cache_read: None,
                     cache_creation: None,
                     done: false,
+                    api_key: api_key.clone(),
+                    request: request.clone(),
+                    retry_count: 0,
+                    max_retries: MAX_RETRIES,
                 },
-                move |mut state| async move {
-                    if state.done {
-                        return None;
-                    }
-
-                    loop {
-                        let item = match state.es.next().await {
-                            Some(event) => event,
-                            None => {
-                                // Stream ended without message_stop — synthesize Done
-                                let usage = make_usage(
-                                    state.input_tok,
-                                    state.output_tok,
-                                    state.cache_read,
-                                    state.cache_creation,
-                                );
-                                state.done = true;
-                                return Some((Ok(LlmEvent::Done { usage }), state));
-                            }
-                        };
-
-                        let msg = match item {
-                            Ok(Event::Open) => continue, // connection opened, no payload
-                            Ok(Event::Message(msg)) => msg,
-                            Err(e) => {
-                                state.done = true;
-                                return Some((
-                                    Err(anyhow::anyhow!("SSE transport error: {e}")),
-                                    state,
-                                ));
-                            }
-                        };
-
-                        let event: AnthropicSseEvent = match serde_json::from_str(&msg.data) {
-                            Ok(ev) => ev,
-                            Err(e) => {
-                                // Unknown or malformed event — log and skip
-                                tracing::warn!(
-                                    event_type = %msg.event,
-                                    error = %e,
-                                    "Skipping unparseable SSE event"
-                                );
-                                continue;
-                            }
-                        };
-
-                        match event {
-                            AnthropicSseEvent::MessageStart { message } => {
-                                state.input_tok = message.usage.input_tokens;
-                                state.cache_read = message.usage.cache_read_input_tokens;
-                                state.cache_creation = message.usage.cache_creation_input_tokens;
-                                // continue looping — nothing to emit yet
-                            }
-                            AnthropicSseEvent::ContentBlockStart {
-                                index,
-                                content_block,
-                            } => {
-                                let block = match &content_block.content {
-                                    ContentType::Text { .. } => BlockState::Text,
-                                    ContentType::Thinking { .. } => BlockState::Thinking,
-                                    ContentType::ToolUse { id, name, .. } => BlockState::ToolUse {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        json_acc: String::new(),
-                                    },
-                                    ContentType::ToolResult { .. } => BlockState::Text,
-                                };
-                                state.blocks.insert(index, block);
-                            }
-                            AnthropicSseEvent::ContentBlockDelta { index, delta } => {
-                                match delta {
-                                    AnthropicDelta::Text { text } => {
-                                        return Some((Ok(LlmEvent::Text { text }), state));
-                                    }
-                                    AnthropicDelta::Thinking { thinking } => {
-                                        return Some((Ok(LlmEvent::Thinking { thinking }), state));
-                                    }
-                                    AnthropicDelta::InputJson { partial_json } => {
-                                        if let Some(BlockState::ToolUse {
-                                            id,
-                                            name,
-                                            ref mut json_acc,
-                                        }) = state.blocks.get_mut(&index)
-                                        {
-                                            json_acc.push_str(&partial_json);
-                                            let id = id.clone();
-                                            let name = Some(name.clone());
-                                            // NLL: borrow on state.blocks ends here
-                                            return Some((
-                                                Ok(LlmEvent::ToolUseDelta {
-                                                    id,
-                                                    name,
-                                                    input_json: partial_json,
-                                                }),
-                                                state,
-                                            ));
-                                        }
-                                        // ToolUseDelta for unknown index — ignore
-                                    }
-                                    AnthropicDelta::Signature { .. } => {
-                                        // Signature deltas accumulate internally;
-                                        // the agent loop doesn't need them.
-                                    }
-                                }
-                            }
-                            AnthropicSseEvent::ContentBlockStop { index } => {
-                                if let Some(BlockState::ToolUse { id, name, json_acc }) =
-                                    state.blocks.remove(&index)
-                                {
-                                    match serde_json::from_str(&json_acc) {
-                                        Ok(input) => {
-                                            return Some((
-                                                Ok(LlmEvent::ToolUseComplete { id, name, input }),
-                                                state,
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            return Some((
-                                                Ok(LlmEvent::Error {
-                                                    error: format!(
-                                                        "Failed to parse tool input JSON: {e}"
-                                                    ),
-                                                }),
-                                                state,
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            AnthropicSseEvent::MessageDelta {
-                                usage: delta_usage, ..
-                            } => {
-                                // message_delta carries the final output token count
-                                state.output_tok = delta_usage.output_tokens;
-                            }
-                            AnthropicSseEvent::MessageStop {} => {
-                                let usage = make_usage(
-                                    state.input_tok,
-                                    state.output_tok,
-                                    state.cache_read,
-                                    state.cache_creation,
-                                );
-                                state.done = true;
-                                return Some((Ok(LlmEvent::Done { usage }), state));
-                            }
-                            AnthropicSseEvent::Error { error } => {
-                                state.done = true;
-                                return Some((
-                                    Ok(LlmEvent::Error {
-                                        error: format!("{}: {}", error.error_type, error.message),
-                                    }),
-                                    state,
-                                ));
-                            }
-                            AnthropicSseEvent::Ping {} => {
-                                // Keep-alive pings — ignore
-                            }
+                move |mut state| {
+                    let client = client.clone();
+                    async move {
+                        if state.done {
+                            return None;
                         }
-                        // If we reach here, the event didn't produce a stream item;
-                        // continue the inner loop.
+
+                        loop {
+                            let item = match state.es.next().await {
+                                Some(event) => event,
+                                None => {
+                                    // Stream ended without message_stop — synthesize Done
+                                    let usage = make_usage(
+                                        state.input_tok,
+                                        state.output_tok,
+                                        state.cache_read,
+                                        state.cache_creation,
+                                    );
+                                    state.done = true;
+                                    return Some((Ok(LlmEvent::Done { usage }), state));
+                                }
+                            };
+
+                            let msg = match item {
+                                Ok(Event::Open) => continue, // connection opened, no payload
+                                Ok(Event::Message(msg)) => msg,
+                                Err(e) => {
+                                    // Retryable HTTP errors (429, 529) get exponential backoff.
+                                    // All other transport errors are terminal.
+                                    if state.retry_count < state.max_retries && is_retryable(&e) {
+                                        let backoff = backoff_duration(state.retry_count);
+                                        tracing::warn!(
+                                            retry_count = state.retry_count,
+                                            backoff_ms = backoff.as_millis(),
+                                            error = %e,
+                                            "Retryable SSE transport error, backing off"
+                                        );
+                                        tokio::time::sleep(backoff).await;
+                                        match EventSource::new(
+                                            client
+                                                .post(format!("{}/v1/messages", ANTHROPIC_BASE_URL))
+                                                .header("x-api-key", &state.api_key)
+                                                .header("anthropic-version", ANTHROPIC_API_VERSION)
+                                                .json(&state.request),
+                                        ) {
+                                            Ok(mut new_es) => {
+                                                new_es.set_retry_policy(Box::new(NoRetry));
+                                                state.es = new_es;
+                                                state.retry_count += 1;
+                                                state.blocks.clear();
+                                                continue;
+                                            }
+                                            Err(rebuild_err) => {
+                                                state.done = true;
+                                                return Some((
+                                                    Err(anyhow::anyhow!(
+                                                    "EventSource rebuild failed: {rebuild_err:?}"
+                                                )),
+                                                    state,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    state.done = true;
+                                    return Some((
+                                        Err(anyhow::anyhow!(
+                                            "SSE transport error after {} retries: {e}",
+                                            state.retry_count
+                                        )),
+                                        state,
+                                    ));
+                                }
+                            };
+
+                            let event: AnthropicSseEvent = match serde_json::from_str(&msg.data) {
+                                Ok(ev) => ev,
+                                Err(e) => {
+                                    // Unknown or malformed event — log and skip
+                                    tracing::warn!(
+                                        event_type = %msg.event,
+                                        error = %e,
+                                        "Skipping unparseable SSE event"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            match event {
+                                AnthropicSseEvent::MessageStart { message } => {
+                                    state.input_tok = message.usage.input_tokens;
+                                    state.cache_read = message.usage.cache_read_input_tokens;
+                                    state.cache_creation =
+                                        message.usage.cache_creation_input_tokens;
+                                    // continue looping — nothing to emit yet
+                                }
+                                AnthropicSseEvent::ContentBlockStart {
+                                    index,
+                                    content_block,
+                                } => {
+                                    let block = match &content_block.content {
+                                        ContentType::Text { .. } => BlockState::Text,
+                                        ContentType::Thinking { .. } => BlockState::Thinking,
+                                        ContentType::ToolUse { id, name, .. } => {
+                                            BlockState::ToolUse {
+                                                id: id.clone(),
+                                                name: name.clone(),
+                                                json_acc: String::new(),
+                                            }
+                                        }
+                                        ContentType::ToolResult { .. } => BlockState::Text,
+                                    };
+                                    state.blocks.insert(index, block);
+                                }
+                                AnthropicSseEvent::ContentBlockDelta { index, delta } => {
+                                    match delta {
+                                        AnthropicDelta::Text { text } => {
+                                            return Some((Ok(LlmEvent::Text { text }), state));
+                                        }
+                                        AnthropicDelta::Thinking { thinking } => {
+                                            return Some((
+                                                Ok(LlmEvent::Thinking { thinking }),
+                                                state,
+                                            ));
+                                        }
+                                        AnthropicDelta::InputJson { partial_json } => {
+                                            if let Some(BlockState::ToolUse {
+                                                id,
+                                                name,
+                                                ref mut json_acc,
+                                            }) = state.blocks.get_mut(&index)
+                                            {
+                                                json_acc.push_str(&partial_json);
+                                                let id = id.clone();
+                                                let name = Some(name.clone());
+                                                // NLL: borrow on state.blocks ends here
+                                                return Some((
+                                                    Ok(LlmEvent::ToolUseDelta {
+                                                        id,
+                                                        name,
+                                                        input_json: partial_json,
+                                                    }),
+                                                    state,
+                                                ));
+                                            }
+                                            // ToolUseDelta for unknown index — ignore
+                                        }
+                                        AnthropicDelta::Signature { .. } => {
+                                            // Signature deltas accumulate internally;
+                                            // the agent loop doesn't need them.
+                                        }
+                                    }
+                                }
+                                AnthropicSseEvent::ContentBlockStop { index } => {
+                                    if let Some(BlockState::ToolUse { id, name, json_acc }) =
+                                        state.blocks.remove(&index)
+                                    {
+                                        match serde_json::from_str(&json_acc) {
+                                            Ok(input) => {
+                                                return Some((
+                                                    Ok(LlmEvent::ToolUseComplete {
+                                                        id,
+                                                        name,
+                                                        input,
+                                                    }),
+                                                    state,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                return Some((
+                                                    Ok(LlmEvent::Error {
+                                                        error: format!(
+                                                            "Failed to parse tool input JSON: {e}"
+                                                        ),
+                                                    }),
+                                                    state,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                AnthropicSseEvent::MessageDelta {
+                                    usage: delta_usage, ..
+                                } => {
+                                    // message_delta carries the final output token count
+                                    state.output_tok = delta_usage.output_tokens;
+                                }
+                                AnthropicSseEvent::MessageStop {} => {
+                                    let usage = make_usage(
+                                        state.input_tok,
+                                        state.output_tok,
+                                        state.cache_read,
+                                        state.cache_creation,
+                                    );
+                                    state.done = true;
+                                    return Some((Ok(LlmEvent::Done { usage }), state));
+                                }
+                                AnthropicSseEvent::Error { error } => {
+                                    state.done = true;
+                                    return Some((
+                                        Ok(LlmEvent::Error {
+                                            error: format!(
+                                                "{}: {}",
+                                                error.error_type, error.message
+                                            ),
+                                        }),
+                                        state,
+                                    ));
+                                }
+                                AnthropicSseEvent::Ping {} => {
+                                    // Keep-alive pings — ignore
+                                }
+                            }
+                            // If we reach here, the event didn't produce a stream item;
+                            // continue the inner loop.
+                        }
                     }
                 },
             );
@@ -494,6 +613,22 @@ mod tests {
         assert_eq!(json[0]["name"], "read_file");
         assert!(json[0].get("function").is_none(), "Anthropic tools are flat");
         assert_eq!(json[0]["input_schema"]["type"], "object");
+        // Each tool definition is annotated with cache_control for prompt caching
+        assert_eq!(json[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_to_anthropic_tools_cache_control_on_all_tools() {
+        let tools = vec![
+            ToolDef { name: "tool_a".into(), description: "A".into(), input_schema: serde_json::json!({}) },
+            ToolDef { name: "tool_b".into(), description: "B".into(), input_schema: serde_json::json!({}) },
+        ];
+        let json = to_anthropic_tools(&tools);
+        assert_eq!(json.len(), 2);
+        for tool in &json {
+            assert_eq!(tool["cache_control"]["type"], "ephemeral",
+                "every tool must have cache_control");
+        }
     }
 
     #[test]
@@ -607,11 +742,24 @@ mod tests {
         let (system, rest) = extract_system(messages);
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].role, Role::User);
+        // extract_system always returns Blocks with cache_control for prompt caching
         match system {
-            Some(AnthropicSystem::String(s)) => {
-                assert_eq!(s, "You are a helpful assistant.");
+            Some(AnthropicSystem::Blocks(blocks)) => {
+                assert_eq!(blocks.len(), 1);
+                assert_eq!(
+                    blocks[0].content,
+                    ContentType::Text {
+                        text: "You are a helpful assistant.".into()
+                    }
+                );
+                assert_eq!(
+                    blocks[0].cache_control,
+                    Some(CacheControl {
+                        cache_type: "ephemeral".into()
+                    })
+                );
             }
-            other => panic!("expected AnthropicSystem::String, got {other:?}"),
+            other => panic!("expected AnthropicSystem::Blocks, got {other:?}"),
         }
     }
 
@@ -636,6 +784,15 @@ mod tests {
         match system {
             Some(AnthropicSystem::Blocks(blocks)) => {
                 assert_eq!(blocks.len(), 2);
+                // Both blocks get cache_control for prompt caching
+                for block in &blocks {
+                    assert_eq!(
+                        block.cache_control,
+                        Some(CacheControl {
+                            cache_type: "ephemeral".into()
+                        })
+                    );
+                }
             }
             other => panic!("expected AnthropicSystem::Blocks, got {other:?}"),
         }
@@ -689,5 +846,49 @@ mod tests {
         assert_eq!(usage.input_tokens, Some(100));
         assert!(usage.cache_read_input_tokens.is_none());
         assert!(usage.cache_creation_input_tokens.is_none());
+    }
+
+    // -- Retry helpers --
+
+    #[test]
+    fn test_is_retryable_429() {
+        // reqwest-eventsource formats HTTP 429 as "InvalidStatusCode(429)" in Debug.
+        let msg = "InvalidStatusCode(429)";
+        assert!(is_retryable(&msg), "429 should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_529() {
+        let msg = "HTTP error: status code 529";
+        assert!(is_retryable(&msg), "529 should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_non_http_error() {
+        let msg = "connection refused";
+        assert!(!is_retryable(&msg), "connection refused is not retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_500_not_retryable() {
+        // 500 is an internal server error, not retryable (only 429/529)
+        let msg = "InvalidStatusCode(500)";
+        assert!(!is_retryable(&msg), "500 should NOT be retryable");
+    }
+
+    #[test]
+    fn test_backoff_duration_exponential() {
+        // Attempt 0 → 1s, attempt 1 → 2s, attempt 2 → 4s
+        assert_eq!(backoff_duration(0), Duration::from_millis(1000));
+        assert_eq!(backoff_duration(1), Duration::from_millis(2000));
+        assert_eq!(backoff_duration(2), Duration::from_millis(4000));
+    }
+
+    #[test]
+    fn test_backoff_duration_capped() {
+        // Attempt 5 → 2^5 = 32s; attempt 6 should stay at 32s (2^5, capped)
+        assert_eq!(backoff_duration(5), Duration::from_millis(32_000));
+        assert_eq!(backoff_duration(6), Duration::from_millis(32_000));
+        assert_eq!(backoff_duration(10), Duration::from_millis(32_000));
     }
 }
