@@ -67,7 +67,7 @@ Before executing any task, classify it into one of five tiers. **This determines
 
 | Tier | Model | Examples |
 |------|-------|----------|
-| **FORMULAIC** | `rust-coder` (flash) | Issue creation from templates, `mod.rs` stubs, `Cargo.toml` from known deps, clap/serde derives, JSON schemas, cargo commands, git operations |
+| **FORMULAIC** | `rust-coder` (flash) | Issue creation from templates, `mod.rs` stubs, `Cargo.toml` from known deps, clap/serde derives, JSON schemas, cargo commands, git operations, applying pre-written diffs/patches, copying known file structures from one path to another |
 | **EXPLORE** | `rust-scout` (qwen3.5-plus) | File finding, pattern discovery, detecting project structure |
 | **IMPLEMENT** | `rust-coder` (flash) | Feature implementation following existing patterns, tool impls, module wiring |
 | **DENSE** | `rust-expert` (pro) | SSE parsing state machines, anchor resolution + byte-range splicing, AST traversal, token budget math, complex error handling, retry/backoff logic |
@@ -84,8 +84,8 @@ Before executing any task, classify it into one of five tiers. **This determines
    - Yes → **ask user** before proceeding (see Human Escalation Gates)
    - No → continue
 
-3. Is this purely mechanical (template text, git ops, cargo commands, derive macros)?
-   - Yes → **FORMULAIC** (delegate to rust-coder/flash)
+3. Is this purely mechanical (template text, git ops, cargo commands, derive macros, applying pre-written diffs, copying files)?
+    - Yes → **FORMULAIC** (delegate to rust-coder/flash; no scout needed)
    - No → continue
 
 4. Is this file-finding, pattern discovery, or context gathering?
@@ -175,6 +175,10 @@ When review feedback arrives on a PR originally built by `rust-coder` or `rust-s
 **Before delegating to `rust-coder` for IMPLEMENT tasks, always run `rust-scout` first.** The scout finds relevant patterns, existing implementations, and context files. Pass the scout's output in the coder's delegation prompt. This prevents the coder from re-discovering patterns mid-implementation and produces better first-pass code.
 
 Exception: FORMULAIC tasks can skip the scout since they're template-based and don't depend on existing code patterns.
+
+### Hard Gate: Delegate After Scout (MANDATORY)
+
+After the scout returns for a FORMULAIC or IMPLEMENT task, **the expert MUST delegate to `rust-coder`.** Do not start writing code. The expert's role is classification + scout context assembly — not implementation. If you find yourself reaching for `edit` or `write` on a FORMULAIC/IMPLEMENT task, stop and delegate. This gate exists because the expert model is expensive and should only write code for DENSE work (state machines, retry logic, parsing, error flow).
 
 ### Delegation Format
 
