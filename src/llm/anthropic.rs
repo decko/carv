@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum AnthropicSystem {
+    /// Text-only system prompt.  No longer emitted by `extract_system`
+    /// (which always returns `Blocks` with cache_control), but kept for
+    /// serialization compatibility in tests that construct requests directly.
     String(String),
     Blocks(Vec<ContentBlock>),
 }
@@ -118,9 +121,12 @@ pub fn to_anthropic_tools(tools: &[ToolDef]) -> Vec<serde_json::Value> {
 // Retry policy + backoff helpers
 // ---------------------------------------------------------------------------
 
-/// Retry policy that never retries. The agent loop handles retry with
-/// exponential backoff; reconnecting at the SSE layer would create
-/// duplicate requests.
+/// Retry policy that never retries at the SSE transport layer.
+///
+/// Retry for transient HTTP errors (429, 529) is handled inside the
+/// `stream::unfold` closure by rebuilding the `EventSource` from stored
+/// request state. Letting `EventSource` auto-reconnect would create
+/// duplicate requests and bypass our exponential backoff timing.
 struct NoRetry;
 
 impl RetryPolicy for NoRetry {
