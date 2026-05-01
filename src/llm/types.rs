@@ -38,6 +38,17 @@ pub enum ContentType {
         #[serde(default)]
         is_error: bool,
     },
+    /// Anthropic extended thinking content block.
+    ///
+    /// Present when `thinking.enabled` is set in the request. The initial
+    /// `thinking` text arrives via `content_block_start`; subsequent chunks
+    /// arrive as `thinking_delta` events.
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
 }
 
 /// Cache control annotation for prompt caching (currently only "ephemeral").
@@ -187,6 +198,11 @@ pub enum LlmEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<LlmUsage>,
     },
+    /// An error at the LLM API/protocol layer (e.g., rate limiting, content
+    /// policy violation). This is distinct from transport-level errors
+    /// (broken connection, DNS failure) which propagate as `Err(...)` on
+    /// the stream item itself. The agent loop may retry transport errors
+    /// but typically treats protocol errors as terminal.
     #[serde(rename = "error")]
     Error { error: String },
 }
@@ -372,6 +388,36 @@ mod tests {
                 tool_use_id: "call_1".to_string(),
                 content: "done".to_string(),
                 is_error: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_content_type_thinking_roundtrip() {
+        let ct = ContentType::Thinking {
+            thinking: "Let me reason about this.".to_string(),
+            signature: "sig_abc123".to_string(),
+        };
+        let json = serde_json::to_value(&ct).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["thinking"], "Let me reason about this.");
+        assert_eq!(json["signature"], "sig_abc123");
+
+        // Round-trip: serialize then deserialize
+        let deserialized: ContentType = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, ct);
+    }
+
+    #[test]
+    fn test_content_type_thinking_no_signature() {
+        // signature has #[serde(default)], so it can be absent
+        let json = r#"{"type":"thinking","thinking":"A quick thought"}"#;
+        let ct: ContentType = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            ct,
+            ContentType::Thinking {
+                thinking: "A quick thought".to_string(),
+                signature: String::new(),
             }
         );
     }
