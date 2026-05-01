@@ -43,7 +43,7 @@ pub struct AnthropicRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stop_sequences: Vec<String>,
 }
 #[derive(Debug, Clone, Deserialize)]
@@ -164,8 +164,8 @@ fn is_retryable(error: &impl std::fmt::Debug) -> bool {
 /// Compute the backoff duration for the given retry attempt.
 ///
 /// Exponential: base * 2^attempt.  Attempt 0 → 1s, attempt 1 → 2s,
-/// attempt 2 → 4s.  Capped at a reasonable upper bound to avoid hanging
-/// the agent loop on pathological cases.
+/// attempt 2 → 4s.  Capped at 32s (unreachable with MAX_RETRIES = 3,
+/// but serves as a safety net if MAX_RETRIES is increased).
 fn backoff_duration(attempt: u32) -> Duration {
     let ms = BACKOFF_BASE_MS * 2u64.pow(attempt.min(5));
     Duration::from_millis(ms)
