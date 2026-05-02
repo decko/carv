@@ -5,7 +5,6 @@
 //! Unlike Anthropic, OpenAI delivers tool call deltas as `function.arguments`
 //! string chunks and includes usage data on the final chunk.
 
-#[allow(unused_imports)]
 use crate::llm::types::ToolDef;
 use serde::{Deserialize, Serialize};
 
@@ -82,7 +81,6 @@ pub struct OpenAISseChunk {
     pub created: Option<u64>,
     pub model: Option<String>,
     pub choices: Vec<OpenAIChoice>,
-    #[serde(default)]
     pub usage: Option<OpenAIUsage>,
 }
 
@@ -99,11 +97,8 @@ pub struct OpenAIChoice {
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct OpenAIDelta {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OpenAIToolCallDelta>>,
 }
 
@@ -122,9 +117,7 @@ pub struct OpenAIToolCallDelta {
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct OpenAIFunctionDelta {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
 }
 
