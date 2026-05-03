@@ -34,7 +34,7 @@ impl RetryPolicy for NoRetry {
 pub(crate) const MAX_RETRIES: u32 = 3;
 
 /// Backoff base duration — first retry after 1s, then 2s, then 4s.
-pub(crate) const BACKOFF_BASE_MS: u64 = 1000;
+const BACKOFF_BASE_MS: u64 = 1000;
 
 /// Check whether an SSE transport error is retryable.
 ///

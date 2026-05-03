@@ -194,6 +194,16 @@ struct ToolAcc {
 /// Named struct (not anonymous tuple) so adding a field touches only the
 /// initialisation site and the one place it is updated, not every
 /// `return Some(...)` site.  EventSource doesn't implement Debug.
+///
+/// ## Retry and partial tool accumulation
+///
+/// When a retry is triggered after a transient HTTP error (429/529), all
+/// in-progress tool accumulations (`tool_calls`) and pending completions
+/// are cleared.  If a [`LlmEvent::ToolUseDelta`] was already yielded to the
+/// consumer before the retry, the final [`LlmEvent::ToolUseComplete`] will
+/// never arrive.  In practice this is acceptable: retries only fire on
+/// 429/529 errors (not mid-stream), and `MAX_RETRIES` limits exposure to
+/// three attempts.  The same limitation exists in the Anthropic provider.
 struct OpenAIStreamState {
     es: EventSource,
     /// Tool call accumulation keyed by the tool's `index` in choices.
@@ -208,7 +218,6 @@ struct OpenAIStreamState {
     api_key: String,
     request: OpenAIRequest,
     retry_count: u32,
-    max_retries: u32,
 }
 
 /// OpenAI `/v1/chat/completions` SSE client implementing [`LlmProvider`].
@@ -261,7 +270,14 @@ fn messages_to_openai(messages: &[Message]) -> Vec<OpenAIMessage> {
                 .iter()
                 .filter_map(|b| match &b.content {
                     crate::llm::types::ContentType::Text { text } => Some(text.as_str()),
-                    _ => None,
+                    other => {
+                        tracing::warn!(
+                            content_type = ?other,
+                            "messages_to_openai: dropping non-text content block \
+                             (tool messages not yet supported — see #22)"
+                        );
+                        None
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -335,7 +351,6 @@ impl LlmProvider for OpenAIProvider {
                     api_key: api_key.clone(),
                     request: request.clone(),
                     retry_count: 0,
-                    max_retries: MAX_RETRIES,
                 },
                 move |mut state| {
                     let client = client.clone();
@@ -378,7 +393,7 @@ impl LlmProvider for OpenAIProvider {
                                 Ok(Event::Open) => continue,
                                 Ok(Event::Message(msg)) => msg,
                                 Err(e) => {
-                                    if state.retry_count < state.max_retries && is_retryable(&e) {
+                                    if state.retry_count < MAX_RETRIES && is_retryable(&e) {
                                         let backoff = backoff_duration(state.retry_count);
                                         tracing::warn!(
                                             retry_count = state.retry_count,
@@ -454,7 +469,12 @@ impl LlmProvider for OpenAIProvider {
                                 None => continue,
                             };
 
-                            // Emit reasoning content before regular content or tool calls
+                            // Emit reasoning content before regular content or tool calls.
+                            // NOTE: If a chunk carries both `reasoning_content` and
+                            // `content`, only the reasoning is emitted on this iteration;
+                            // the content is dropped.  OpenAI's current API (as of 2026)
+                            // sends them in separate chunks, but this assumption may
+                            // change with future models.
                             if let Some(reasoning) = &choice.delta.reasoning_content {
                                 if !reasoning.is_empty() {
                                     return Some((
@@ -522,10 +542,16 @@ impl LlmProvider for OpenAIProvider {
                                     state.last_usage = chunk.usage.clone();
                                 }
                                 Some("tool_calls") => {
-                                    // Drain accumulated tools into pending queue; they'll
-                                    // be emitted one per unfold iteration.
-                                    let completed = std::mem::take(&mut state.tool_calls);
-                                    state.pending_completions.extend(completed.into_values());
+                                    // Drain accumulated tools into pending queue, sorted by
+                                    // index so ToolUseComplete events are emitted in the
+                                    // order the model declared them (HashMap iteration order
+                                    // is non-deterministic).
+                                    let mut ordered: Vec<(u32, ToolAcc)> =
+                                        std::mem::take(&mut state.tool_calls).into_iter().collect();
+                                    ordered.sort_unstable_by_key(|(idx, _)| *idx);
+                                    state
+                                        .pending_completions
+                                        .extend(ordered.into_iter().map(|(_, acc)| acc));
                                 }
                                 Some("length") => {
                                     let text_content = if state.tool_calls.is_empty() {
