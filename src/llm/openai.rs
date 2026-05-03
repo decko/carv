@@ -240,6 +240,12 @@ impl OpenAIProvider {
 ///
 /// Unlike Anthropic, OpenAI places the system prompt inside the `messages`
 /// array (as `role: "system"`), not in a separate top-level field.
+///
+/// TODO(#22): Support tool result messages (`role: "tool"`) and assistant
+/// messages with tool calls. The current implementation only handles text
+/// content blocks. Multi-turn agent conversations with tool use will need
+/// proper `tool_calls` field population and `role: "tool"` messages for
+/// tool results.
 fn messages_to_openai(messages: &[Message]) -> Vec<OpenAIMessage> {
     messages
         .iter()
@@ -398,6 +404,7 @@ impl LlmProvider for OpenAIProvider {
                                                 state.es = new_es;
                                                 state.retry_count += 1;
                                                 state.tool_calls.clear();
+                                                state.pending_completions.clear();
                                                 continue;
                                             }
                                             Err(rebuild_err) => {
