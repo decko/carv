@@ -219,6 +219,19 @@ fn extract_system(mut messages: Vec<Message>) -> (Option<AnthropicSystem>, Vec<M
     }
 }
 
+/// Map carv's provider-agnostic roles to Anthropic-compatible roles.
+///
+/// Anthropic does not have a native `role: "tool"` — tool results are sent
+/// as `role: "user"` messages with `tool_result` content blocks.  Call this
+/// before serializing messages to the Anthropic wire format.
+fn normalize_roles_for_anthropic(messages: &mut [Message]) {
+    for msg in messages {
+        if msg.role == Role::Tool {
+            msg.role = Role::User;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // LlmProvider implementation
 // ---------------------------------------------------------------------------
@@ -233,7 +246,8 @@ impl LlmProvider for AnthropicProvider {
         let api_key = self.api_key.clone();
         let model = self.model.clone();
         let client = self.client.clone();
-        let messages = messages.to_vec();
+        let mut messages = messages.to_vec();
+        normalize_roles_for_anthropic(&mut messages);
         let tools = tools.to_vec();
         let config = config.clone();
 
@@ -453,7 +467,10 @@ impl LlmProvider for AnthropicProvider {
                                     if let Some(BlockState::ToolUse { id, name, json_acc }) =
                                         state.blocks.remove(&index)
                                     {
-                                        match serde_json::from_str(&json_acc) {
+                                        // Default to "{}" for zero-argument tools.
+                                        let json_str =
+                                            if json_acc.is_empty() { "{}" } else { &json_acc };
+                                        match serde_json::from_str(json_str) {
                                             Ok(input) => {
                                                 return Some((
                                                     Ok(LlmEvent::ToolUseComplete {
