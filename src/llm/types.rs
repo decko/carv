@@ -92,6 +92,12 @@ pub enum Role {
     System,
     User,
     Assistant,
+    /// Tool result message (OpenAI `role: "tool"`).
+    ///
+    /// Anthropic does not have a native "tool" role — tool results are sent
+    /// as `role: "user"` messages with `tool_result` content blocks. The
+    /// Anthropic provider converts `Tool` → `User` before serialization.
+    Tool,
 }
 
 /// A message in the conversation.
@@ -123,6 +129,25 @@ impl Message {
         Message {
             role: Role::Assistant,
             content: vec![ContentBlock::text(text)],
+        }
+    }
+
+    /// Create a tool result message from a tool call ID and result text.
+    ///
+    /// The content block uses [`ContentType::ToolResult`] so providers can
+    /// map it to their wire format: OpenAI as `role: "tool"` with
+    /// `tool_call_id`, Anthropic as `role: "user"` with a `tool_result` block.
+    pub fn tool_result(tool_use_id: String, result_text: String) -> Self {
+        Message {
+            role: Role::Tool,
+            content: vec![ContentBlock {
+                content: ContentType::ToolResult {
+                    tool_use_id,
+                    content: result_text,
+                    is_error: false,
+                },
+                cache_control: None,
+            }],
         }
     }
 }
@@ -658,6 +683,28 @@ mod tests {
         assert_eq!(serde_json::to_value(Role::System).unwrap(), "system");
         assert_eq!(serde_json::to_value(Role::User).unwrap(), "user");
         assert_eq!(serde_json::to_value(Role::Assistant).unwrap(), "assistant");
+        assert_eq!(serde_json::to_value(Role::Tool).unwrap(), "tool");
+    }
+
+    #[test]
+    fn test_message_tool_roundtrip() {
+        let msg = Message::tool_result("call_123".into(), "result text".into());
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role, Role::Tool);
+        assert_eq!(deserialized.content.len(), 1);
+        match &deserialized.content[0].content {
+            ContentType::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "call_123");
+                assert_eq!(content, "result text");
+                assert!(!is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 
     // -- PartialEq tests --

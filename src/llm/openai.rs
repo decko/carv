@@ -54,6 +54,10 @@ pub struct OpenAIMessage {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OpenAIToolCall>>,
+    /// Required for `role: "tool"` messages — links the result to the
+    /// assistant's tool call by ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// A tool call from the assistant.
@@ -216,6 +220,7 @@ struct OpenAIStreamState {
     done: bool,
     /// Cached request info for rebuilding the EventSource on retry.
     api_key: String,
+    base_url: String,
     request: OpenAIRequest,
     retry_count: u32,
 }
@@ -228,14 +233,21 @@ struct OpenAIStreamState {
 pub struct OpenAIProvider {
     api_key: String,
     model: String,
+    base_url: String,
     client: reqwest::Client,
 }
 
 impl OpenAIProvider {
     pub fn new(api_key: String, model: String) -> Self {
+        Self::with_base_url(api_key, model, OPENAI_BASE_URL.to_string())
+    }
+
+    /// Create a provider pointing at a custom base URL (for integration tests).
+    pub(crate) fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
         Self {
             api_key,
             model,
+            base_url,
             client: reqwest::Client::new(),
         }
     }
@@ -250,21 +262,121 @@ impl OpenAIProvider {
 /// Unlike Anthropic, OpenAI places the system prompt inside the `messages`
 /// array (as `role: "system"`), not in a separate top-level field.
 ///
-/// TODO(#22): Support tool result messages (`role: "tool"`) and assistant
-/// messages with tool calls. The current implementation only handles text
-/// content blocks. Multi-turn agent conversations with tool use will need
-/// proper `tool_calls` field population and `role: "tool"` messages for
-/// tool results.
+/// ## Role mapping
+/// | carv `Role`     | OpenAI `role`   | Notes |
+/// |-----------------|-----------------|-------|
+/// | `System`        | `"system"`      | Text content only |
+/// | `User`          | `"user"`        | Text content only |
+/// | `Assistant`     | `"assistant"`   | Text content **or** `tool_calls` array |
+/// | `Tool`          | `"tool"`        | `ToolResult` → `tool_call_id` + content |
 fn messages_to_openai(messages: &[Message]) -> Vec<OpenAIMessage> {
     messages
         .iter()
         .map(|m| {
-            let role = match m.role {
+            let role_str = match m.role {
                 Role::System => "system",
                 Role::User => "user",
                 Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            };
+
+            // Tool result messages: extract tool_use_id and content from
+            // ToolResult blocks. The `tool_call_id` links the result back
+            // to the assistant's tool call.
+            //
+            // Note: OpenAI wire format only supports one content string per
+            // tool message.  If multiple ToolResult blocks are present, only
+            // the last one survives (`fold` overwrites).  carv currently
+            // creates single-block tool messages via `Message::tool_result()`.
+            if m.role == Role::Tool {
+                // Warn if multiple ToolResult blocks are present (only the last
+                // survives — OpenAI wire format has a single `content` field).
+                let tool_result_count = m
+                    .content
+                    .iter()
+                    .filter(|b| {
+                        matches!(b.content, crate::llm::types::ContentType::ToolResult { .. })
+                    })
+                    .count();
+                if tool_result_count > 1 {
+                    tracing::warn!(
+                        count = tool_result_count,
+                        "messages_to_openai: multiple ToolResult blocks in one \
+                         Role::Tool message; only the last will be sent"
+                    );
+                }
+                let (tool_call_id, result_text) =
+                    m.content
+                        .iter()
+                        .fold((None, String::new()), |(id, text), b| match &b.content {
+                            crate::llm::types::ContentType::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => (Some(tool_use_id.clone()), content.clone()),
+                            other => {
+                                tracing::warn!(
+                                    content_type = ?other,
+                                    "messages_to_openai: expected ToolResult in \
+                                     Role::Tool message, dropping block"
+                                );
+                                (id, text)
+                            }
+                        });
+                return OpenAIMessage {
+                    role: role_str.to_string(),
+                    content: if result_text.is_empty() {
+                        None
+                    } else {
+                        Some(result_text)
+                    },
+                    tool_calls: None,
+                    tool_call_id,
+                };
             }
-            .to_string();
+
+            // Assistant messages may contain tool calls (ToolUse blocks).
+            // When present, the `tool_calls` field carries the function name
+            // and serialized arguments; `content` is omitted.
+            if m.role == Role::Assistant {
+                let tool_calls: Vec<OpenAIToolCall> = m
+                    .content
+                    .iter()
+                    .filter_map(|b| match &b.content {
+                        crate::llm::types::ContentType::ToolUse { id, name, input } => {
+                            let arguments = serde_json::to_string(input).unwrap_or_else(|e| {
+                                tracing::error!(
+                                    error = %e,
+                                    tool_name = %name,
+                                    "messages_to_openai: failed to serialize tool input"
+                                );
+                                String::new()
+                            });
+                            Some(OpenAIToolCall {
+                                id: id.clone(),
+                                call_type: "function".to_string(),
+                                function: OpenAIFunctionCall {
+                                    name: name.clone(),
+                                    arguments,
+                                },
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+
+                if !tool_calls.is_empty() {
+                    return OpenAIMessage {
+                        role: role_str.to_string(),
+                        content: None,
+                        tool_calls: Some(tool_calls),
+                        tool_call_id: None,
+                    };
+                }
+                // Fall through: text-only assistant message
+            }
+
+            // System, User, and text-only Assistant: collect Text blocks
             let text = m
                 .content
                 .iter()
@@ -274,17 +386,19 @@ fn messages_to_openai(messages: &[Message]) -> Vec<OpenAIMessage> {
                         tracing::warn!(
                             content_type = ?other,
                             "messages_to_openai: dropping non-text content block \
-                             (tool messages not yet supported — see #22)"
+                             in {role_str} message"
                         );
                         None
                     }
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+
             OpenAIMessage {
-                role,
+                role: role_str.to_string(),
                 content: if text.is_empty() { None } else { Some(text) },
                 tool_calls: None,
+                tool_call_id: None,
             }
         })
         .collect()
@@ -313,6 +427,7 @@ impl LlmProvider for OpenAIProvider {
     ) -> LlmStreamFuture<'_> {
         let api_key = self.api_key.clone();
         let model = self.model.clone();
+        let base_url = self.base_url.clone();
         let client = self.client.clone();
         let messages = messages.to_vec();
         let tools = tools.to_vec();
@@ -333,7 +448,7 @@ impl LlmProvider for OpenAIProvider {
             };
 
             let builder = client
-                .post(format!("{}/v1/chat/completions", OPENAI_BASE_URL))
+                .post(format!("{}/v1/chat/completions", base_url))
                 .header("Authorization", format!("Bearer {api_key}"))
                 .json(&request);
 
@@ -349,6 +464,7 @@ impl LlmProvider for OpenAIProvider {
                     last_usage: None,
                     done: false,
                     api_key: api_key.clone(),
+                    base_url: base_url.clone(),
                     request: request.clone(),
                     retry_count: 0,
                 },
@@ -363,7 +479,14 @@ impl LlmProvider for OpenAIProvider {
                         if let Some(acc) = state.pending_completions.pop() {
                             if let Some(name) = acc.name {
                                 let id = acc.id.clone();
-                                return match serde_json::from_str(&acc.json_acc) {
+                                // Default to "{}" for zero-argument tools
+                                // (OpenAI always emits at least "{}", but be defensive).
+                                let json_str = if acc.json_acc.is_empty() {
+                                    "{}"
+                                } else {
+                                    &acc.json_acc
+                                };
+                                return match serde_json::from_str(json_str) {
                                     Ok(input) => Some((
                                         Ok(LlmEvent::ToolUseComplete { id, name, input }),
                                         state,
@@ -406,7 +529,7 @@ impl LlmProvider for OpenAIProvider {
                                             client
                                                 .post(format!(
                                                     "{}/v1/chat/completions",
-                                                    OPENAI_BASE_URL
+                                                    state.base_url
                                                 ))
                                                 .header(
                                                     "Authorization",
@@ -542,16 +665,44 @@ impl LlmProvider for OpenAIProvider {
                                     state.last_usage = chunk.usage.clone();
                                 }
                                 Some("tool_calls") => {
-                                    // Drain accumulated tools into pending queue, sorted by
-                                    // index so ToolUseComplete events are emitted in the
-                                    // order the model declared them (HashMap iteration order
-                                    // is non-deterministic).
+                                    // Drain accumulated tools, sorted by index so
+                                    // ToolUseComplete events are emitted in the order
+                                    // the model declared them.  Emit the first one
+                                    // immediately — returning it from the inner loop
+                                    // ensures it's yielded before any subsequent [DONE]
+                                    // or stream-end event.  Remaining completions are
+                                    // queued in `pending_completions` for the next
+                                    // unfold iteration.
                                     let mut ordered: Vec<(u32, ToolAcc)> =
                                         std::mem::take(&mut state.tool_calls).into_iter().collect();
                                     ordered.sort_unstable_by_key(|(idx, _)| *idx);
-                                    state
-                                        .pending_completions
-                                        .extend(ordered.into_iter().map(|(_, acc)| acc));
+                                    let mut iter = ordered.into_iter().map(|(_, acc)| acc);
+
+                                    if let Some(first) = iter.next() {
+                                        state.pending_completions = iter.collect();
+                                        let name = first.name.clone().unwrap_or_default();
+                                        let id = first.id.clone();
+                                        // Default to "{}" for zero-argument tools.
+                                        let json_str = if first.json_acc.is_empty() {
+                                            "{}"
+                                        } else {
+                                            &first.json_acc
+                                        };
+                                        return match serde_json::from_str(json_str) {
+                                            Ok(input) => Some((
+                                                Ok(LlmEvent::ToolUseComplete { id, name, input }),
+                                                state,
+                                            )),
+                                            Err(e) => Some((
+                                                Ok(LlmEvent::Error {
+                                                    error: format!(
+                                                        "Failed to parse tool input JSON: {e}"
+                                                    ),
+                                                }),
+                                                state,
+                                            )),
+                                        };
+                                    }
                                 }
                                 Some("length") => {
                                     let text_content = if state.tool_calls.is_empty() {
@@ -687,6 +838,7 @@ mod tests {
                 role: "system".into(),
                 content: Some("You are helpful.".into()),
                 tool_calls: None,
+                tool_call_id: None,
             }],
             tools: vec![],
             stream: true,
@@ -925,5 +1077,230 @@ mod tests {
         let llm_usage = make_llm_usage(&usage);
         assert_eq!(llm_usage.input_tokens, 30);
         assert_eq!(llm_usage.output_tokens, 0);
+    }
+
+    // -- Tool message conversion tests --
+
+    #[test]
+    fn test_messages_to_openai_tool_result() {
+        let msg = Message::tool_result("call_abc".into(), "file contents".into());
+        let result = messages_to_openai(&[msg]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "tool");
+        assert_eq!(result[0].content.as_deref(), Some("file contents"));
+        assert_eq!(result[0].tool_call_id.as_deref(), Some("call_abc"));
+        assert!(result[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_messages_to_openai_tool_result_serialization() {
+        let msg = Message::tool_result("call_xyz".into(), "result".into());
+        let openai_msgs = messages_to_openai(&[msg]);
+        let json = serde_json::to_value(&openai_msgs[0]).unwrap();
+        assert_eq!(json["role"], "tool");
+        assert_eq!(json["content"], "result");
+        assert_eq!(json["tool_call_id"], "call_xyz");
+        // `tool_calls` must be absent (not null) for "tool" role messages
+        assert!(json.get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn test_messages_to_openai_assistant_tool_calls() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![crate::llm::types::ContentBlock {
+                content: crate::llm::types::ContentType::ToolUse {
+                    id: "call_001".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path": "/src/main.rs"}),
+                },
+                cache_control: None,
+            }],
+        };
+        let result = messages_to_openai(&[msg]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "assistant");
+        // content is None when tool_calls are present
+        assert!(result[0].content.is_none());
+        assert!(result[0].tool_call_id.is_none());
+        let tool_calls = result[0].tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_001");
+        assert_eq!(tool_calls[0].call_type, "function");
+        assert_eq!(tool_calls[0].function.name, "read_file");
+        // arguments must be a JSON string
+        let args: serde_json::Value =
+            serde_json::from_str(&tool_calls[0].function.arguments).unwrap();
+        assert_eq!(args["path"], "/src/main.rs");
+    }
+
+    #[test]
+    fn test_messages_to_openai_assistant_text_only() {
+        // Assistant messages without ToolUse blocks still produce text
+        let msg = Message::assistant("Sure, I can help.");
+        let result = messages_to_openai(&[msg]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "assistant");
+        assert_eq!(result[0].content.as_deref(), Some("Sure, I can help."));
+        assert!(result[0].tool_calls.is_none());
+        assert!(result[0].tool_call_id.is_none());
+    }
+
+    #[test]
+    fn test_messages_to_openai_mixed_roles() {
+        let messages = vec![
+            Message::system("You are a helpful assistant."),
+            Message::user("read the file"),
+            Message {
+                role: Role::Assistant,
+                content: vec![crate::llm::types::ContentBlock {
+                    content: crate::llm::types::ContentType::ToolUse {
+                        id: "call_002".into(),
+                        name: "read_file".into(),
+                        input: serde_json::json!({"path": "/tmp/test"}),
+                    },
+                    cache_control: None,
+                }],
+            },
+            Message::tool_result("call_002".into(), "file contents here".into()),
+            Message::assistant("The file contains the requested data."),
+        ];
+        let result = messages_to_openai(&messages);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0].role, "system");
+        assert_eq!(result[1].role, "user");
+        assert_eq!(result[2].role, "assistant");
+        assert!(result[2].tool_calls.is_some());
+        assert_eq!(result[3].role, "tool");
+        assert_eq!(result[3].tool_call_id.as_deref(), Some("call_002"));
+        assert_eq!(result[4].role, "assistant");
+        assert!(result[4].tool_calls.is_none());
+    }
+
+    // -- Integration tests --
+
+    /// SSE body fragment for a simple text-only streaming response.
+    const SSE_TEXT_BODY: &str = concat!(
+        "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    /// Spawn a local TCP server that writes `body` as an SSE HTTP response
+    /// and returns the base URL.
+    ///
+    /// **One-shot:** accepts a single connection, writes the response, then
+    /// the spawned task exits.  Suitable for single-request integration tests;
+    /// would hang on a second connection (retry tests need a separate server).
+    async fn spawn_sse_server(body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}", addr);
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            use tokio::io::AsyncWriteExt;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{}",
+                body
+            );
+            stream.write_all(response.as_bytes()).await.ok();
+            stream.flush().await.ok();
+        });
+        base_url
+    }
+
+    /// Helper to collect all events from a stream into a `Vec<LlmEvent>`.
+    ///
+    // TODO: Move to a shared `tests::helpers` module when integration tests
+    // grow across multiple provider files (e.g., #68 Anthropic tests).
+    async fn collect_events(mut stream: LlmStream) -> Vec<LlmEvent> {
+        let mut events = vec![];
+        while let Some(Ok(event)) = stream.next().await {
+            events.push(event);
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn test_stream_chat_integration_text() {
+        let base_url = spawn_sse_server(SSE_TEXT_BODY).await;
+        let provider = OpenAIProvider::with_base_url("sk-test".into(), "gpt-4".into(), base_url);
+        let stream = provider
+            .stream_chat(
+                &[Message::user("hi")],
+                &[],
+                &RequestConfig {
+                    max_tokens: 100,
+                    temperature: None,
+                    top_p: None,
+                    stop_sequences: vec![],
+                    thinking: false,
+                    thinking_budget: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events = collect_events(stream).await;
+        assert_eq!(events.len(), 3, "unexpected events: {events:?}");
+        assert_eq!(
+            events[0],
+            LlmEvent::Text {
+                text: "Hello".into()
+            }
+        );
+        assert_eq!(
+            events[1],
+            LlmEvent::Text {
+                text: " world".into()
+            }
+        );
+        assert!(
+            matches!(&events[2], LlmEvent::Done { usage } if usage.as_ref().map(|u| u.input_tokens) == Some(10)),
+            "expected Done with usage, got {:?}",
+            events[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_chat_integration_tool_calls() {
+        let body = concat!(
+            "data: {\"id\":\"2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_abc\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"/src/main.rs\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let base_url = spawn_sse_server(body).await;
+        let provider = OpenAIProvider::with_base_url("sk-test".into(), "gpt-4".into(), base_url);
+        let stream = provider
+            .stream_chat(
+                &[Message::user("read main.rs")],
+                &[],
+                &RequestConfig {
+                    max_tokens: 100,
+                    temperature: None,
+                    top_p: None,
+                    stop_sequences: vec![],
+                    thinking: false,
+                    thinking_budget: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events = collect_events(stream).await;
+        // Should get: ToolUseDelta, ToolUseDelta, ToolUseComplete, Done
+        assert_eq!(events.len(), 4, "unexpected events: {events:?}");
+        assert!(
+            matches!(&events[0], LlmEvent::ToolUseDelta { id, name, .. } if id == "call_abc" && name.as_deref() == Some("read_file"))
+        );
+        assert!(
+            matches!(&events[1], LlmEvent::ToolUseDelta { input_json, .. } if input_json.contains("/src/main.rs"))
+        );
+        assert!(
+            matches!(&events[2], LlmEvent::ToolUseComplete { id, name, .. } if id == "call_abc" && name == "read_file")
+        );
+        assert!(matches!(&events[3], LlmEvent::Done { .. }));
     }
 }
