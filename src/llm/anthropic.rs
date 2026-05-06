@@ -175,14 +175,21 @@ const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 pub struct AnthropicProvider {
     api_key: String,
     model: String,
+    base_url: String,
     client: reqwest::Client,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
+        Self::with_base_url(api_key, model, ANTHROPIC_BASE_URL.to_string())
+    }
+
+    /// Create a provider pointing at a custom base URL (for integration tests).
+    pub(crate) fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
         Self {
             api_key,
             model,
+            base_url,
             client: reqwest::Client::new(),
         }
     }
@@ -245,6 +252,7 @@ impl LlmProvider for AnthropicProvider {
     ) -> LlmStreamFuture<'_> {
         let api_key = self.api_key.clone();
         let model = self.model.clone();
+        let base_url = self.base_url.clone();
         let client = self.client.clone();
         let mut messages = messages.to_vec();
         normalize_roles_for_anthropic(&mut messages);
@@ -280,7 +288,7 @@ impl LlmProvider for AnthropicProvider {
 
             // Build the HTTP request
             let builder = client
-                .post(format!("{}/v1/messages", ANTHROPIC_BASE_URL))
+                .post(format!("{}/v1/messages", base_url))
                 .header("x-api-key", &api_key)
                 .header("anthropic-version", ANTHROPIC_API_VERSION)
                 .json(&request);
@@ -313,6 +321,7 @@ impl LlmProvider for AnthropicProvider {
                 },
                 move |mut state| {
                     let client = client.clone();
+                    let base_url = base_url.clone();
                     async move {
                         if state.done {
                             return None;
@@ -351,7 +360,7 @@ impl LlmProvider for AnthropicProvider {
                                         tokio::time::sleep(backoff).await;
                                         match EventSource::new(
                                             client
-                                                .post(format!("{}/v1/messages", ANTHROPIC_BASE_URL))
+                                                .post(format!("{}/v1/messages", base_url))
                                                 .header("x-api-key", &state.api_key)
                                                 .header("anthropic-version", ANTHROPIC_API_VERSION)
                                                 .json(&state.request),
@@ -809,5 +818,145 @@ mod tests {
         assert_eq!(usage.input_tokens, Some(100));
         assert!(usage.cache_read_input_tokens.is_none());
         assert!(usage.cache_creation_input_tokens.is_none());
+    }
+
+    // -- Integration tests (Anthropic SSE mock server) --
+
+    /// Spawn a local TCP server that writes `body` as an SSE HTTP response
+    /// and returns the base URL.
+    ///
+    /// **One-shot:** accepts a single connection, writes the response, then
+    /// the spawned task exits.  Suitable for single-request integration tests;
+    /// would hang on a second connection (retry tests need a separate server).
+    async fn spawn_sse_server(body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}", addr);
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            use tokio::io::AsyncWriteExt;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{}",
+                body
+            );
+            stream.write_all(response.as_bytes()).await.ok();
+            stream.flush().await.ok();
+        });
+        base_url
+    }
+
+    /// Helper to collect all events from a stream into a `Vec<LlmEvent>`.
+    async fn collect_events(mut stream: LlmStream) -> Vec<LlmEvent> {
+        let mut events = vec![];
+        while let Some(Ok(event)) = stream.next().await {
+            events.push(event);
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn test_stream_chat_integration_text() {
+        let body = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let base_url = spawn_sse_server(body).await;
+        let provider =
+            AnthropicProvider::with_base_url("sk-test".into(), "claude-sonnet-4-20250514".into(), base_url);
+        let stream = provider
+            .stream_chat(
+                &[Message::user("hi")],
+                &[],
+                &RequestConfig {
+                    max_tokens: 100,
+                    temperature: None,
+                    top_p: None,
+                    stop_sequences: vec![],
+                    thinking: false,
+                    thinking_budget: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events = collect_events(stream).await;
+        assert_eq!(events.len(), 3, "unexpected events: {events:?}");
+        assert_eq!(
+            events[0],
+            LlmEvent::Text {
+                text: "Hello".into()
+            }
+        );
+        assert_eq!(
+            events[1],
+            LlmEvent::Text {
+                text: " world".into()
+            }
+        );
+        assert!(
+            matches!(&events[2], LlmEvent::Done { usage } if usage.as_ref().map(|u| u.input_tokens) == Some(10)),
+            "expected Done with usage, got {:?}",
+            events[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_chat_integration_tool_calls() {
+        let body = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_tool\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_abc\",\"name\":\"read_file\",\"input\":{}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"/src/main.rs\\\"}\"}}\n\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":20}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let base_url = spawn_sse_server(body).await;
+        let provider =
+            AnthropicProvider::with_base_url("sk-test".into(), "claude-sonnet-4-20250514".into(), base_url);
+        let stream = provider
+            .stream_chat(
+                &[Message::user("read main.rs")],
+                &[],
+                &RequestConfig {
+                    max_tokens: 100,
+                    temperature: None,
+                    top_p: None,
+                    stop_sequences: vec![],
+                    thinking: false,
+                    thinking_budget: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events = collect_events(stream).await;
+        // Should get: ToolUseDelta, ToolUseDelta, ToolUseComplete, Done
+        assert_eq!(events.len(), 4, "unexpected events: {events:?}");
+        assert!(
+            matches!(&events[0], LlmEvent::ToolUseDelta { id, name, .. } if id == "toolu_abc" && name.as_deref() == Some("read_file")),
+            "expected ToolUseDelta with id=toolu_abc name=read_file, got {:?}",
+            events[0]
+        );
+        assert!(
+            matches!(&events[1], LlmEvent::ToolUseDelta { input_json, .. } if input_json.contains("/src/main.rs")),
+            "expected ToolUseDelta containing /src/main.rs, got {:?}",
+            events[1]
+        );
+        assert!(
+            matches!(&events[2], LlmEvent::ToolUseComplete { id, name, .. } if id == "toolu_abc" && name == "read_file"),
+            "expected ToolUseComplete id=toolu_abc name=read_file, got {:?}",
+            events[2]
+        );
+        // Verify the parsed input JSON
+        if let LlmEvent::ToolUseComplete { input, .. } = &events[2] {
+            assert_eq!(input["path"], "/src/main.rs");
+        }
+        assert!(matches!(&events[3], LlmEvent::Done { .. }));
     }
 }
