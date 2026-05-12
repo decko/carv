@@ -55,12 +55,16 @@ impl Tool for ReadFileTool {
                 None => return Ok(ToolResult::error("missing required 'path' parameter")),
             };
 
+            // Resolve relative paths against the workspace root.
             let resolved = if Path::new(path_str).is_absolute() {
                 PathBuf::from(path_str)
             } else {
                 ctx.workspace_root.join(path_str)
             };
 
+            // Canonicalize if possible; fall back to the resolved path on failure
+            // (e.g. the file doesn't exist yet — the I/O error below will be more
+            // informative).
             let canonical = resolved.canonicalize().unwrap_or(resolved);
 
             let mut anchor_state = ctx.anchor_state.lock().expect("anchor state lock poisoned");
@@ -218,6 +222,18 @@ impl Tool for ListFilesTool {
             };
 
             let canonical = resolved.canonicalize().unwrap_or(resolved);
+
+            // Check that the path exists and is a directory before walking.
+            if !canonical.is_dir() {
+                return Ok(ToolResult::error(format!(
+                    "list_files failed: {}",
+                    if canonical.exists() {
+                        "not a directory"
+                    } else {
+                        "path does not exist"
+                    }
+                )));
+            }
 
             let walker = ignore::WalkBuilder::new(&canonical)
                 .standard_filters(true)
@@ -689,6 +705,55 @@ mod tests {
         assert!(
             result.content.contains("default_test.rs"),
             "should find file with default path"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_nonexistent_directory_errors() {
+        let dir = temp_dir("list_nonexistent_dir");
+        let ctx = test_context(dir);
+
+        let tool = ListFilesTool;
+        let result = tool
+            .execute(json!({"path": "nonexistent_dir"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "expected error for nonexistent directory");
+        assert!(
+            result.content.contains("list_files failed"),
+            "error should mention list_files failed, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("path does not exist"),
+            "error should state the path does not exist, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn list_file_not_directory_errors() {
+        let dir = temp_dir("list_file_not_dir");
+        write_temp_file(&dir, "a_file.rs", "// not a directory");
+
+        let ctx = test_context(dir);
+
+        let tool = ListFilesTool;
+        let result = tool
+            .execute(json!({"path": "a_file.rs"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_error,
+            "expected error when listing a file, got success: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("not a directory"),
+            "error should state 'not a directory', got: {}",
+            result.content
         );
     }
 }
