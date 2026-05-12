@@ -174,7 +174,9 @@ impl Tool for WriteFileTool {
 /// Tool that lists directory contents with `.gitignore`-aware filtering.
 ///
 /// Uses the `ignore` crate to walk the directory, respecting `.gitignore`
-/// and `.ignore` files. Returns relative paths from the listed directory.
+/// and `.ignore` patterns. Hidden files and directories (dot-prefixed,
+/// such as `.env` or `.cargo/`) are also excluded by the default filters.
+/// Returns relative paths to files, one per line.
 pub struct ListFilesTool;
 
 impl Tool for ListFilesTool {
@@ -185,7 +187,8 @@ impl Tool for ListFilesTool {
     fn description(&self) -> &str {
         "List files in a directory within the project workspace. \
          Results respect .gitignore and .ignore patterns. \
-         Returns relative paths, one per line."
+         Hidden files and directories (dot-prefixed) are excluded. \
+         Returns relative file paths, one per line."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -217,7 +220,8 @@ impl Tool for ListFilesTool {
                 .get("max_entries")
                 .and_then(Value::as_u64)
                 .map(|v| usize::try_from(v).unwrap_or(200))
-                .unwrap_or(200);
+                .unwrap_or(200)
+                .min(10_000);
 
             let resolved = if Path::new(path_str).is_absolute() {
                 PathBuf::from(path_str)
@@ -252,6 +256,12 @@ impl Tool for ListFilesTool {
                         let path = entry.path();
                         // Skip the root directory itself.
                         if path == canonical {
+                            continue;
+                        }
+                        // Only list files, not directories.  The tool name is
+                        // "list_files" and returning directory entries would
+                        // confuse the LLM into trying to open them.
+                        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                             continue;
                         }
                         // Get the relative path from the listing directory.
@@ -328,7 +338,6 @@ mod tests {
         }
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
-        f.flush().unwrap();
         path
     }
 
