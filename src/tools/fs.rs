@@ -143,12 +143,16 @@ impl Tool for WriteFileTool {
                 ctx.workspace_root.join(path_str)
             };
 
-            let canonical = resolved.canonicalize().unwrap_or(resolved);
-
-            match tokio::fs::write(&canonical, content).await {
+            match tokio::fs::write(&resolved, content).await {
                 Ok(()) => {
                     let byte_count = content.len();
-                    // Invalidate anchor cache so subsequent reads get fresh anchors.
+                    // Canonicalize AFTER the write so the key matches what
+                    // ReadFileTool will resolve.  If the file is new, a
+                    // pre-write canonicalize would fall back to the raw
+                    // `resolved` path while ReadFileTool would later get
+                    // the true canonical path — breaking cache invalidation
+                    // when a directory component is a symlink.
+                    let canonical = resolved.canonicalize().unwrap_or(resolved);
                     let mut anchor_state =
                         ctx.anchor_state.lock().expect("anchor state lock poisoned");
                     anchor_state.notify_edit(&canonical);
@@ -212,7 +216,7 @@ impl Tool for ListFilesTool {
             let max_entries = input
                 .get("max_entries")
                 .and_then(Value::as_u64)
-                .map(|v| v as usize)
+                .map(|v| usize::try_from(v).unwrap_or(200))
                 .unwrap_or(200);
 
             let resolved = if Path::new(path_str).is_absolute() {
@@ -274,7 +278,8 @@ impl Tool for ListFilesTool {
             let mut output = entries.join("\n");
             if truncated {
                 use std::fmt::Write;
-                let _ = write!(output, "\n... truncated at {max_entries} entries");
+                write!(output, "\n... truncated at {max_entries} entries")
+                    .expect("write to String is infallible");
             }
 
             if output.is_empty() {
@@ -304,8 +309,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Create an empty temporary directory and return its path.
+    ///
+    /// Removes any leftover directory from a previous run first, so tests
+    /// start with a clean slate regardless of state on disk.
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("carv-test").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -557,7 +566,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_to_subdirectory() {
+    async fn write_fails_when_parent_missing() {
         let dir = temp_dir("write_to_subdir");
         let ctx = test_context(dir);
 
@@ -682,8 +691,13 @@ mod tests {
             !result.content.contains("ignore.log"),
             "should NOT contain ignore.log"
         );
-        // The .gitignore file itself may or may not appear (it's hidden).
-        // That's fine either way — we just check that the ignored file doesn't appear.
+        // `standard_filters(true)` enables the `hidden` filter, which hides
+        // dot-files including `.gitignore` itself.  Assert it is absent so
+        // tests don't accidentally depend on filter internals that may change.
+        assert!(
+            !result.content.contains(".gitignore"),
+            "standard_filters hides dot-files including .gitignore"
+        );
     }
 
     #[tokio::test]
