@@ -143,6 +143,31 @@ impl Tool for WriteFileTool {
                 ctx.workspace_root.join(path_str)
             };
 
+            // Path traversal guard: the resolved path must stay within the
+            // workspace.  Walk up to the nearest existing ancestor so we can
+            // canonicalize and compare even when the target file is new.
+            {
+                let root_canon = ctx
+                    .workspace_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| ctx.workspace_root.clone());
+                let mut probe = resolved.clone();
+                let bound = loop {
+                    match probe.canonicalize() {
+                        Ok(c) => break c,
+                        Err(_) => match probe.parent() {
+                            Some(parent) => probe = parent.to_path_buf(),
+                            None => break resolved.clone(),
+                        },
+                    }
+                };
+                if !bound.starts_with(&root_canon) {
+                    return Ok(ToolResult::error(
+                        "write_file failed: path escapes workspace root",
+                    ));
+                }
+            }
+
             match tokio::fs::write(&resolved, content).await {
                 Ok(()) => {
                     let byte_count = content.len();
@@ -614,7 +639,7 @@ mod tests {
 
         assert!(!result.is_error, "list failed: {}", result.content);
 
-        // Output should contain all files (and subdirectory).
+        // Output should contain all files.
         assert!(result.content.contains("alpha.rs"), "missing alpha.rs");
         assert!(result.content.contains("beta.rs"), "missing beta.rs");
         assert!(result.content.contains("gamma.rs"), "missing gamma.rs");
