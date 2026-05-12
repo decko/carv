@@ -838,4 +838,20 @@ mod tests {
             result.content
         );
     }
+
+    #[tokio::test]
+    async fn list_rejects_path_outside_workspace() {
+        let dir = temp_dir("list_traversal");
+        let ctx = test_context(dir);
+
+        let tool = ListFilesTool;
+        let result = tool.execute(json!({"path": "../../"}), &ctx).await.unwrap();
+
+        assert!(result.is_error, "should reject traversal path for listing");
+        assert!(
+            result.content.contains("path escapes workspace root"),
+            "error should mention workspace escape, got: {}",
+            result.content
+        );
+    }
 }
