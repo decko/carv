@@ -110,7 +110,7 @@ impl Tool for WriteFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to write, relative to the project root or absolute"
+                    "description": "Path to the file to write, relative to the project root or absolute within the workspace"
                 },
                 "content": {
                     "type": "string",
@@ -222,7 +222,7 @@ impl Tool for ListFilesTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the directory to list, relative to the project root or absolute (defaults to the project root)"
+                    "description": "Path to the directory to list, relative to the project root or absolute within the workspace (defaults to the project root)"
                 },
                 "max_entries": {
                     "type": "integer",
