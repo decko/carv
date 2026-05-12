@@ -268,6 +268,20 @@ impl Tool for ListFilesTool {
                 )));
             }
 
+            // Guard against path traversal: the resolved directory must
+            // stay within the workspace root (same check as WriteFileTool).
+            {
+                let root_canon = ctx
+                    .workspace_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| ctx.workspace_root.clone());
+                if !canonical.starts_with(&root_canon) {
+                    return Ok(ToolResult::error(
+                        "list_files failed: path escapes workspace root",
+                    ));
+                }
+            }
+
             let walker = ignore::WalkBuilder::new(&canonical)
                 .standard_filters(true)
                 .require_git(false)
@@ -616,6 +630,26 @@ mod tests {
             .unwrap();
         assert!(result.is_error, "should fail when parent dir doesn't exist");
         assert!(result.content.contains("write_file failed"));
+    }
+
+    #[tokio::test]
+    async fn write_rejects_path_outside_workspace() {
+        let dir = temp_dir("write_traversal");
+        let ctx = test_context(dir);
+
+        let tool = WriteFileTool;
+
+        // Relative path with ".." escape.
+        let result = tool
+            .execute(json!({"path": "../../outside.rs", "content": "oops"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_error, "should reject traversal path");
+        assert!(
+            result.content.contains("path escapes workspace root"),
+            "error should mention workspace escape, got: {}",
+            result.content
+        );
     }
 
     // -----------------------------------------------------------------------
