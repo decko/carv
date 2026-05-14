@@ -79,7 +79,7 @@ impl Tool for SearchFilesTool {
             let max_results: usize = input
                 .get("max_results")
                 .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
+                .map(|v| (v as usize).max(1))
                 .unwrap_or(500);
 
             // Compile the regex pattern.
@@ -133,6 +133,13 @@ impl Tool for SearchFilesTool {
                     continue;
                 }
 
+                // Cap check at the file level: once max_results is reached,
+                // skip the anchor lock entirely — just count the omitted matches.
+                if all_results.len() >= max_results {
+                    truncated += matched_line_nums.len();
+                    continue;
+                }
+
                 // Compute path relative to workspace root for output.
                 let relative_path = file_path
                     .strip_prefix(&ctx.workspace_root)
@@ -153,10 +160,6 @@ impl Tool for SearchFilesTool {
 
                 // Map 1-indexed line numbers from grep-searcher to 0-indexed anchor positions.
                 for line_num in &matched_line_nums {
-                    if all_results.len() >= max_results {
-                        truncated += 1;
-                        continue;
-                    }
                     let idx = line_num.saturating_sub(1) as usize;
                     if let Some((anchor, line)) = anchors.get(idx) {
                         all_results.push(format!("{}:{anchor}│{line}\n", relative_path.display()));
@@ -250,12 +253,14 @@ mod tests {
             "missing match in:\n{}",
             result.content
         );
-        // Every line must have a non-empty anchor before the │.
+        // Every line must have a non-empty anchor word before the │.
         for line in result.content.lines() {
             assert!(line.contains('│'), "line missing │ separator: {line:?}");
             let before = line.split('│').next().unwrap_or("");
+            // before is "path:anchor" — split on ':' and check the last segment
+            let anchor_part = before.rsplitn(2, ':').next().unwrap_or("");
             assert!(
-                !before.is_empty(),
+                !anchor_part.is_empty(),
                 "anchor should not be empty in line: {line:?}"
             );
         }
