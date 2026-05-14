@@ -353,6 +353,11 @@ mod tests {
     async fn gitignore_respected() {
         let dir = temp_dir("carv-test-gitignore");
 
+        // The `ignore` crate only applies gitignore rules within a git
+        // repository. CI temp dirs are outside any repo, so we create a
+        // fake .git directory to anchor gitignore resolution.
+        std::fs::create_dir_all(dir.join(".git")).expect("create fake git repo");
+
         // Create a .gitignore that excludes bar.txt.
         write_temp_file(&dir, ".gitignore", "bar.txt\n");
 
