@@ -1,4 +1,4 @@
-//! `execute_command` tool — sandboxed command execution.
+//! `execute_command` tool — resource-limited command execution.
 //!
 //! Runs shell commands with a 30-second timeout, working directory pinned to
 //! the workspace root, combined stdout+stderr capped at 32 KB, and no shell
@@ -9,13 +9,15 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tracing::warn;
 
 use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 
-/// Maximum combined stdout+stderr output in bytes before truncation.
+/// Maximum formatted output size in bytes before truncation.
+/// Applied to the full result string (headers + stdout + stderr).
 const OUTPUT_CAP: usize = 32 * 1024; // 32 KB
 
-/// Tool that executes a command with sandboxing constraints.
+/// Tool that executes a command with resource limits.
 ///
 /// The LLM can use this to run build commands, tests, formatters, linters, etc.
 /// All commands are pinned to the workspace root and cannot escape via `cd` or
@@ -28,7 +30,7 @@ impl Tool for ExecuteCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a command in the project workspace with sandboxing. \
+        "Execute a command in the project workspace with resource limits. \
          The command runs with a 30-second timeout, working directory pinned \
          to the workspace root, combined stdout+stderr output capped at 32 KB, \
          and no shell interpretation (use command + args array — not a shell \
@@ -90,7 +92,10 @@ impl Tool for ExecuteCommandTool {
                 .current_dir(&ctx.workspace_root)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
-                .stdin(std::process::Stdio::null());
+                .stdin(std::process::Stdio::null())
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", std::env::var("HOME").unwrap_or_default());
 
             // ------------------------------------------------------------------
             // Spawn the child process
@@ -133,8 +138,14 @@ impl Tool for ExecuteCommandTool {
             match wait_result {
                 Ok(Ok(status)) => {
                     // Process exited normally within the timeout.
-                    let stdout_bytes = stdout_task.await.unwrap_or_default();
-                    let stderr_bytes = stderr_task.await.unwrap_or_default();
+                    let stdout_bytes = stdout_task
+                        .await
+                        .inspect_err(|e| warn!("stdout reader task panicked: {e}"))
+                        .unwrap_or_default();
+                    let stderr_bytes = stderr_task
+                        .await
+                        .inspect_err(|e| warn!("stderr reader task panicked: {e}"))
+                        .unwrap_or_default();
 
                     let exit_code = status.code().unwrap_or(-1);
                     let stdout_str = String::from_utf8_lossy(&stdout_bytes);
@@ -170,16 +181,22 @@ impl Tool for ExecuteCommandTool {
                         output.push_str("--- (TRUNCATED at 32 KB) ---\n");
                     }
 
-                    Ok(ToolResult::ok(output.trim_end().to_string()))
+                    let trimmed_len = output.trim_end().len();
+                    output.truncate(trimmed_len);
+                    Ok(ToolResult::ok(output))
                 }
                 Ok(Err(e)) => {
                     // wait() returned an I/O error.
+                    stdout_task.abort();
+                    stderr_task.abort();
                     let _ = child.start_kill();
                     let _ = child.wait().await;
                     Ok(ToolResult::error(format!("command failed: {e}")))
                 }
                 Err(_elapsed) => {
                     // The 30-second timeout expired.
+                    stdout_task.abort();
+                    stderr_task.abort();
                     let _ = child.start_kill();
                     let _ = child.wait().await;
                     Ok(ToolResult::error(
@@ -217,6 +234,7 @@ mod tests {
     // Basic execution
     // -----------------------------------------------------------------------
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn echo_hello() {
         let tool = ExecuteCommandTool;
@@ -235,6 +253,7 @@ mod tests {
         assert!(result.content.contains("hello"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn sleep_short() {
         let tool = ExecuteCommandTool;
@@ -252,6 +271,7 @@ mod tests {
         assert!(result.content.contains("Exit code: 0"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn args_passthrough() {
         let tool = ExecuteCommandTool;
@@ -336,6 +356,7 @@ mod tests {
     // Output truncation
     // -----------------------------------------------------------------------
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn output_truncation() {
         let tool = ExecuteCommandTool;
@@ -364,6 +385,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn short_output_not_truncated() {
         let tool = ExecuteCommandTool;
