@@ -49,6 +49,7 @@ impl Tool for SearchFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
+                    "minimum": 1,
                     "description": "Maximum number of matching lines to return (default 500)"
                 }
             },
