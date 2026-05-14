@@ -6,7 +6,19 @@
 
 pub mod fs;
 pub mod registry;
+pub mod search;
 pub mod traits;
 
 pub use registry::ToolRegistry;
 pub use traits::{Tool, ToolContext, ToolFuture, ToolResult};
+
+/// Returns the default set of tools available to the LLM.
+///
+/// The agent loop calls this to populate [`ToolRegistry`] at startup,
+/// filtering out any disallowed tools afterward.
+pub fn default_tools() -> Vec<Box<dyn Tool>> {
+    vec![
+        Box::new(fs::ReadFileTool),
+        Box::new(search::SearchFilesTool),
+    ]
+}
