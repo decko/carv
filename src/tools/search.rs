@@ -12,6 +12,7 @@ use grep_regex::RegexMatcher;
 use grep_searcher::{sinks, Searcher};
 use ignore::WalkBuilder;
 use serde_json::Value;
+use tracing::debug;
 
 use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 
@@ -45,6 +46,10 @@ impl Tool for SearchFilesTool {
                 "path": {
                     "type": "string",
                     "description": "Directory to search, relative to the project root or absolute (defaults to workspace root)"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of matching lines to return (default 500)"
                 }
             },
             "required": ["pattern"]
@@ -70,6 +75,13 @@ impl Tool for SearchFilesTool {
                 None => ctx.workspace_root.clone(),
             };
 
+            // Extract optional "max_results" parameter; default to 500.
+            let max_results: usize = input
+                .get("max_results")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(500);
+
             // Compile the regex pattern.
             let matcher = match RegexMatcher::new(pattern) {
                 Ok(m) => m,
@@ -83,24 +95,28 @@ impl Tool for SearchFilesTool {
 
             let mut searcher = Searcher::new();
             let mut all_results: Vec<String> = Vec::new();
+            let mut truncated: usize = 0;
 
             for entry in walker {
                 let entry = match entry {
                     Ok(e) => e,
-                    Err(_) => continue,
+                    Err(e) => {
+                        debug!("skipping unreadable entry: {e}");
+                        continue;
+                    }
                 };
 
                 if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                     continue;
                 }
 
-                let file_path = entry.path().to_path_buf();
+                let file_path = entry.path();
 
                 // Use grep-searcher to find matching lines.
                 let mut matched_line_nums: BTreeSet<u64> = BTreeSet::new();
                 let search_result = searcher.search_path(
                     &matcher,
-                    &file_path,
+                    file_path,
                     sinks::UTF8(|line_num, _line| {
                         matched_line_nums.insert(line_num);
                         Ok::<_, std::io::Error>(true)
@@ -108,7 +124,8 @@ impl Tool for SearchFilesTool {
                 );
 
                 // Skip files that can't be searched (binary, permission, etc.).
-                if search_result.is_err() {
+                if let Err(e) = search_result {
+                    debug!("skipping unsearchable file {}: {e}", file_path.display());
                     continue;
                 }
 
@@ -116,20 +133,41 @@ impl Tool for SearchFilesTool {
                     continue;
                 }
 
+                // Compute path relative to workspace root for output.
+                let relative_path = file_path
+                    .strip_prefix(&ctx.workspace_root)
+                    .unwrap_or(file_path);
+
                 // Get anchors for this file.
                 let mut anchor_state = ctx.anchor_state.lock().expect("anchor state lock poisoned");
-                let anchors = match anchor_state.get_anchors(&file_path) {
+                let anchors = match anchor_state.get_anchors(file_path) {
                     Ok(a) => a,
-                    Err(_) => continue,
+                    Err(e) => {
+                        debug!(
+                            "skipping file with anchor error {}: {e}",
+                            relative_path.display()
+                        );
+                        continue;
+                    }
                 };
 
                 // Map 1-indexed line numbers from grep-searcher to 0-indexed anchor positions.
                 for line_num in &matched_line_nums {
+                    if all_results.len() >= max_results {
+                        truncated += 1;
+                        continue;
+                    }
                     let idx = line_num.saturating_sub(1) as usize;
                     if let Some((anchor, line)) = anchors.get(idx) {
-                        all_results.push(format!("{anchor}│{line}\n"));
+                        all_results.push(format!("{}:{anchor}│{line}\n", relative_path.display()));
                     }
                 }
+            }
+
+            if truncated > 0 {
+                all_results.push(format!(
+                    "... {truncated} more matches omitted. Narrow your search pattern.\n"
+                ));
             }
 
             if all_results.is_empty() {
@@ -157,6 +195,7 @@ mod tests {
     /// Create (or re-use) a temporary directory inside the OS temp dir.
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir); // clean stale state from prior runs
         std::fs::create_dir_all(&dir).expect("failed to create temp dir");
         dir
     }
@@ -194,6 +233,11 @@ mod tests {
         assert!(
             !result.is_error,
             "expected success, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("test.rs:"),
+            "missing file path prefix in:\n{}",
             result.content
         );
         assert!(
@@ -324,11 +368,17 @@ mod tests {
         // With gitignore working we see 1 unique line; without it we'd see 2.
         let unique_lines: std::collections::HashSet<&str> = result.content.lines().collect();
 
-        assert!(
-            unique_lines.len() <= 1,
-            "expected at most 1 unique line (gitignored file excluded), got {}: {:?}",
+        assert_eq!(
+            unique_lines.len(),
+            1,
+            "expected exactly 1 unique line (gitignored file excluded), got {}: {:?}",
             unique_lines.len(),
             unique_lines
+        );
+        assert!(
+            result.content.contains("foo.txt:"),
+            "expected 'foo.txt:' file path prefix in output, got: {}",
+            result.content
         );
         assert!(
             result.content.contains("│secret stuff"),
@@ -362,6 +412,11 @@ mod tests {
         assert!(
             !result.is_error,
             "expected success, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("a/data.txt:"),
+            "expected 'a/data.txt:' file path prefix in output, got: {}",
             result.content
         );
         assert!(
@@ -445,6 +500,11 @@ mod tests {
         assert!(
             !result.is_error,
             "expected success, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("dup.txt:"),
+            "expected 'dup.txt:' file path prefix in output, got: {}",
             result.content
         );
         // The line "hello hello world" should appear only once.
