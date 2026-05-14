@@ -39,7 +39,7 @@ src/
 │   ├── traits.rs         # Tool trait definition
 │   ├── fs.rs             # read_file, write_file, list_files (.gitignore-aware)
 │   ├── edit.rs           # edit_file (hash-anchored, multi-file batched edits)
-│   ├── exec.rs           # execute_command (sandboxed: timeout, cwd, output cap)
+│   ├── exec.rs           # execute_command (resource-limited: timeout, cwd, output cap)
 │   ├── treesitter.rs     # get_skeleton, get_function, replace_symbol
 │   ├── lsp.rs            # lsp_rename, lsp_references, lsp_definition, lsp_diagnostics
 │   └── search.rs         # search_files (.gitignore-aware, ripgrep-based)
@@ -204,7 +204,7 @@ All tools auto-approved. `--disallowed-tools` removes tools from the registry be
 | `edit_file` | no | Hash-anchored edits: replace/insert_before/insert_after. Supports multi-file batching. |
 | `list_files` | yes | List directory contents (.gitignore-aware) |
 | `search_files` | yes | Ripgrep content search, .gitignore-aware (returns hash-anchored lines) |
-| `execute_command` | no | Run shell command (sandboxed: 30s timeout, cwd pinned, output capped) |
+| `execute_command` | no | Run shell command (resource-limited: 30s timeout, cwd pinned, output capped) |
 | `get_skeleton` | yes | AST structural outline (hash-anchored) |
 | `get_function` | yes | Extract function body by name (hash-anchored) |
 | `replace_symbol` | no | Replace function/class by AST node. Supports multi-file batching. |
