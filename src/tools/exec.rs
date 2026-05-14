@@ -93,6 +93,11 @@ impl Tool for ExecuteCommandTool {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .stdin(std::process::Stdio::null())
+                // Clear all environment variables to prevent secrets (API keys,
+                // tokens, etc.) from leaking to child processes. Pass only PATH
+                // and HOME; locale vars (LANG, LC_ALL) are intentionally dropped
+                // — some tools may render non-ASCII differently, but the LLM can
+                // observe and adapt.
                 .env_clear()
                 .env("PATH", std::env::var("PATH").unwrap_or_default())
                 .env("HOME", std::env::var("HOME").unwrap_or_default());
