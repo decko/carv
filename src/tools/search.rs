@@ -158,11 +158,16 @@ impl Tool for SearchFilesTool {
                     }
                 };
 
-                // Map 1-indexed line numbers from grep-searcher to 0-indexed anchor positions.
+                // Per-line: enforce cap within a file that straddles the boundary.
                 for line_num in &matched_line_nums {
-                    let idx = line_num.saturating_sub(1) as usize;
-                    if let Some((anchor, line)) = anchors.get(idx) {
-                        all_results.push(format!("{}:{anchor}│{line}\n", relative_path.display()));
+                    if all_results.len() >= max_results {
+                        truncated += 1;
+                    } else {
+                        let idx = line_num.saturating_sub(1) as usize;
+                        if let Some((anchor, line)) = anchors.get(idx) {
+                            all_results
+                                .push(format!("{}:{anchor}│{line}\n", relative_path.display()));
+                        }
                     }
                 }
             }
@@ -485,6 +490,42 @@ mod tests {
         assert!(
             result.content.contains("No matches found"),
             "expected 'No matches found', got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn respects_max_results_within_single_file() {
+        let dir = temp_dir("carv-test-max-results-file");
+        // One file with 5 matching lines.
+        write_temp_file(&dir, "data.txt", "match\nmatch\nmatch\nmatch\nmatch\n");
+
+        let tool = SearchFilesTool;
+        let ctx = test_context(dir);
+        let result = tool
+            .execute(
+                serde_json::json!({"pattern": "match", "max_results": 2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "expected success, got: {}",
+            result.content
+        );
+        // Exactly 2 matching lines.
+        let match_count = result.content.matches("│match\n").count();
+        assert_eq!(
+            match_count, 2,
+            "expected exactly 2 results, got {}: {}",
+            match_count, result.content
+        );
+        // Truncation message mentions 3 omitted.
+        assert!(
+            result.content.contains("3 more matches omitted"),
+            "expected truncation message mentioning 3 omitted, got: {}",
             result.content
         );
     }
