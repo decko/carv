@@ -310,6 +310,23 @@ The reviewer (rust-reviewer) must go beyond mechanical DoD checks. These apply t
 - Cross-reference request/response fields against the provider's API reference.
 - Test the trickiest wire format feature (e.g., Anthropic's top-level `usage` in `message_delta`, not nested inside `delta`).
 
+### For tool PRs (read_file, search_files, execute_command, edit_file, etc.)
+- **No panics in agent path**: Flag every `.unwrap()`, `.expect()`, `.panic!()`, bare `[i]` without bounds check.
+- **Multi-file output contract**: Every result line from cross-file tools must include a file identifier (relative path).
+- **Caps at all granularities**: File-level AND per-line cap checks where data can straddle boundaries.
+- **Silent errors logged**: Every `Err(_) => continue` must have `tracing::debug!` or `tracing::warn!`.
+- **Test assertion precision**: `assert_eq!(x, N)` not `assert!(x <= N)` where 0 means "feature doesn't work."
+- **Platform-gated tests**: `#[cfg(unix)]` on tests using `echo`, `sleep`, `dd`, `/dev/zero`.
+- **Terminology honesty**: Tool docs must not promise more than implementation delivers (e.g., "sandboxed" → "resource-limited").
+
+### For security-sensitive PRs (command execution, process spawn, network)
+- **Environment isolation**: `Command::new()` must have `env_clear()` or curated env — no API key inheritance.
+- **Task lifecycle**: `tokio::spawn()` handles must be awaited or aborted on ALL code paths, including error/timeout.
+- **Timeout/kill/reap**: Timeout must `start_kill()` + `wait().await` — no zombie processes.
+- **No shell injection**: Commands via `Command::new(cmd).args(args)` — never `sh -c` with string interpolation.
+
+### High-signal pre-scan (run before full review)
+
 ## Dependencies to Know
 
 - `tokio` — multi-threaded runtime, process spawning, channels

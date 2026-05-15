@@ -127,6 +127,15 @@ If `cargo clippy` fails, fix warnings. If `cargo test` fails, fix tests or the c
 - `#[serde(untagged)]`: variant order matters. The first variant that deserializes wins. Document the order choice in a comment.
 - Tagged enums (`#[serde(tag = "type")]`): every variant gets at least one deserialization test.
 
+### Tool Implementation Patterns
+
+- **Sandboxed commands**: Always `env_clear()` + minimal `PATH`/`HOME`. Child processes inherit parent env by default — API keys leak.
+- **Multi-file read tools**: Output must include file path/identifier per line. The LLM needs to know which file each result came from.
+- **Caps and limits**: Check at ALL granularity levels. File-level cap AND per-line cap. A single file with more matches than `max_results` must still be capped.
+- **Task lifecycle**: `tokio::spawn()` handles must be awaited or aborted on EVERY code path, including error and timeout branches. Orphaned tasks leak allocations.
+- **Platform gates**: Tests using `echo`, `sleep`, `dd`, `/dev/zero` must be `#[cfg(unix)]`.
+- **Error silence**: Every `Err(_) => continue` or `Err(_) => {}` arm must include `tracing::debug!` or `tracing::warn!`.
+
 ### Test Coverage Standards
 
 - **Tagged enums**: at least one deserialization test per variant.
@@ -157,4 +166,8 @@ If `cargo clippy` fails, fix warnings. If `cargo test` fails, fix tests or the c
 - Don't hardcode secrets, API keys, or credentials
 - Don't skip input validation on CLI args or parsed data
 - Don't use `unwrap()` or `expect()` in production code paths
+- Don't spawn child processes without `env_clear()` — API keys and secrets leak through inherited environment
+- Don't leave spawned `tokio::task` handles unawaited/ unaborted on error paths — orphaned tasks leak allocations
+- Don't produce multi-file search/read output without a file identifier per result line
+- Don't use `assert!(x <= N)` where N=0 means "the feature under test doesn't work at all" — use `assert_eq!`
 - Don't ignore parse failures in tree-sitter operations

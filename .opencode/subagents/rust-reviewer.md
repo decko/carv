@@ -86,6 +86,21 @@ This subagent is invoked by `rust-expert` for:
 - [ ] **No untested public items**: Cross-reference `pub` types/functions against the test module. Every `pub fn`, `pub struct`, and `pub enum` variant must appear in at least one test. Flag any with zero coverage.
 - [ ] **The trickiest wire feature**: Identify the most unusual field in the API format and test it specifically (e.g., Anthropic's top-level `usage` in `message_delta`, not nested inside `delta`).
 - [ ] **Edge cases**: Empty arrays, null fields, missing required fields, unknown variants.
+- [ ] **Assertions are precise, not vacuous**: `== N` not `<= N` where N=0 means "feature doesn't work at all". Flag `<=` and `>=` assertions where the boundary value allows the test to pass even if nothing happens.
+- [ ] **Platform gates**: Tests invoking external commands (`echo`, `sleep`, `dd`, Unix paths) must have `#[cfg(unix)]` or equivalent.
+
+### 9. Tool Output Contracts
+
+- [ ] **Multi-file tools include file identifier in every result line**: Path/filename must be present so LLM knows where matches came from. `search_files` must prefix with relative path.
+- [ ] **Caps/thresholds checked at ALL relevant granularity levels**: File-level AND per-line-level guards where data can straddle boundaries. A single-file overflow must be caught.
+- [ ] **`Command::new()` / `Command::spawn()` with explicit env control**: `env_clear()` or curated env; no accidental API key / secret inheritance from parent process.
+- [ ] **Task lifecycle on error paths**: `tokio::spawn()` handles must be explicitly aborted or awaited on ALL code paths — no orphaned tasks leaking allocations.
+
+### 10. Documentation & Terminology
+
+- [ ] **Terms match implementation**: No doc strings, comments, or `description()` that promise more than the code delivers. "sandboxed" means filesystem isolation — "resource-limited" is honest about timeout+cwd+cap.
+- [ ] **All error-silence paths logged**: Every `Err(_) => continue` or `Err(_) => {}` must include `tracing::debug!` or `tracing::warn!` — silent error suppression hides bugs.
+- [ ] **Truncation/cap comments are accurate**: If `OUTPUT_CAP` docs say "raw bytes" but applies to formatted output, fix the comment.
 
 ## Review Output Format
 
