@@ -1,0 +1,37 @@
+#!/bin/sh
+# Pre-commit hook managed by cargo-husky (user-hooks feature).
+# This script runs all checks since user-hooks disables the built-in features.
+
+set -e
+
+# --- Cargo checks ---
+
+echo "Running cargo fmt -- --check..."
+cargo fmt -- --check
+
+echo "Running cargo clippy -- -D warnings..."
+cargo clippy -- -D warnings
+
+echo "Running cargo test..."
+cargo test
+
+# --- Secret scanning (optional) ---
+
+if command -v git-secrets >/dev/null 2>&1; then
+    echo "Running git secrets --scan --staged..."
+
+    # Register allowed patterns for carv project (idempotent).
+    # These are configured per-repo by git-secrets and safe to run on every commit.
+    git secrets --add --literal 'ANTHROPIC_API_KEY' 2>/dev/null || true
+    git secrets --add --literal 'OPENAI_API_KEY' 2>/dev/null || true
+    git secrets --add --literal 'GITHUB_TOKEN' 2>/dev/null || true
+    git secrets --add --literal 'AWS_ACCESS_KEY_ID' 2>/dev/null || true
+    git secrets --add --literal 'AWS_SECRET_ACCESS_KEY' 2>/dev/null || true
+
+    # Scan staged files for secrets.
+    # Redirect stderr to stdout so any warnings are visible.
+    git secrets --scan --staged
+else
+    echo "git-secrets not found. Skipping secret scan."
+    echo "Install from: https://github.com/awslabs/git-secrets"
+fi

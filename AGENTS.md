@@ -9,6 +9,60 @@ cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
+## Pre-commit Hooks
+
+Client-side git hooks are managed by [cargo-husky](https://github.com/rhysd/cargo-husky). They are auto-installed into `.git/hooks/` on `cargo test`. Hooks run on `git commit`:
+
+| Hook | What it does |
+|---|---|
+| `cargo fmt -- --check` | Rejects unformatted Rust code |
+| `cargo clippy -- -D warnings` | Rejects clippy warnings |
+| `cargo test` | Rejects if any test fails |
+| `git secrets --scan --staged` | Scans staged files for API keys and credentials |
+
+### How it works
+
+cargo-husky uses a `build.rs` that runs during `cargo test` (dev-dependencies are compiled
+for testing). It copies the hook scripts from `.cargo-husky/hooks/` into `.git/hooks/`.
+Since the project uses the `user-hooks` feature, the script at `.cargo-husky/hooks/pre-commit`
+handles all checks — including cargo fmt, clippy, test, and secret scanning.
+
+### Manual installation (worktrees)
+
+cargo-husky v1.5.0 does not fully support git worktrees (the build script cannot parse
+the `gitdir:` prefix in `.git` files). If you work in a worktree, install the hook manually:
+
+```bash
+# Determine the worktree's git hooks directory
+WORKTREE_GITDIR=$(cat .git | sed 's/gitdir: //')/hooks
+mkdir -p "$WORKTREE_GITDIR"
+cp .cargo-husky/hooks/pre-commit "$WORKTREE_GITDIR/pre-commit"
+chmod +x "$WORKTREE_GITDIR/pre-commit"
+```
+
+### Secret scanning
+
+Install [git-secrets](https://github.com/awslabs/git-secrets) for secret detection:
+
+```bash
+# macOS
+brew install git-secrets
+
+# Linux (from source)
+git clone https://github.com/awslabs/git-secrets.git
+cd git-secrets && sudo make install
+```
+
+If git-secrets is not installed, the pre-commit hook skips secret scanning (non-blocking).
+
+### Bypassing hooks
+
+In emergencies, skip hooks with:
+
+```bash
+git commit --no-verify -m "message"
+```
+
 **`Cargo.lock` policy:** Commit it. carv is a binary crate — lockfiles ensure reproducible builds. Library crates omit them; binaries do not.
 
 ## Architecture
