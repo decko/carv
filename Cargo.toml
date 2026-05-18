@@ -27,5 +27,10 @@ grep-searcher = "0.1"
 # tree-sitter-python = "0.24"
 # tree-sitter-typescript = "0.24"
 
+[dev-dependencies]
+# Pre-commit hooks (user-hooks feature is mutually exclusive with other features,
+# so the .cargo-husky/hooks/pre-commit script handles all checks).
+cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "user-hooks"] }
+
 [build-dependencies]
 # cc = "1"  # Deferred with tree-sitter; only needed for C grammar compilation.
