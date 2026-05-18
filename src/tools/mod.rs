@@ -4,6 +4,7 @@
 //! the [`Tool`] trait. The registry holds `Box<dyn Tool>` entries and applies
 //! deny-list filtering. See the design doc for the full tool inventory.
 
+pub mod edit;
 pub mod exec;
 pub mod fs;
 pub mod registry;
@@ -19,6 +20,7 @@ pub use traits::{Tool, ToolContext, ToolFuture, ToolResult};
 /// filtering out any disallowed tools afterward.
 pub fn default_tools() -> Vec<Box<dyn Tool>> {
     vec![
+        Box::new(edit::EditFileTool),
         Box::new(exec::ExecuteCommandTool),
         Box::new(fs::ReadFileTool),
         Box::new(search::SearchFilesTool),
