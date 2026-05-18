@@ -18,7 +18,7 @@ Client-side git hooks are managed by [cargo-husky](https://github.com/rhysd/carg
 | `cargo fmt -- --check` | Rejects unformatted Rust code |
 | `cargo clippy -- -D warnings` | Rejects clippy warnings |
 | `cargo test` | Rejects if any test fails |
-| `git secrets --scan --staged` | Scans staged files for API keys and credentials |
+| `git secrets --scan --cached` | Scans staged files for API keys and credentials |
 
 ### How it works
 

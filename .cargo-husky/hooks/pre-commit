@@ -18,19 +18,23 @@ cargo test
 # --- Secret scanning (optional) ---
 
 if command -v git-secrets >/dev/null 2>&1; then
-    echo "Running git secrets --scan --staged..."
+    echo "Running git secrets --scan --cached..."
 
-    # Register allowed patterns for carv project (idempotent).
-    # These are configured per-repo by git-secrets and safe to run on every commit.
-    git secrets --add --literal 'ANTHROPIC_API_KEY' 2>/dev/null || true
-    git secrets --add --literal 'OPENAI_API_KEY' 2>/dev/null || true
-    git secrets --add --literal 'GITHUB_TOKEN' 2>/dev/null || true
-    git secrets --add --literal 'AWS_ACCESS_KEY_ID' 2>/dev/null || true
-    git secrets --add --literal 'AWS_SECRET_ACCESS_KEY' 2>/dev/null || true
+    # Register secret patterns for carv project (idempotent).
+    # Regex patterns match actual secret formats, not bare env var names.
+    # Anthropic API keys: sk-ant-api03-...
+    git secrets --add 'sk-ant-api[0-9]+-[A-Za-z0-9+/_=-]{20,}' 2>/dev/null || true
+    # OpenAI API keys: sk-proj-... or sk-...
+    git secrets --add 'sk-(proj-)?[A-Za-z0-9+/_=-]{20,}' 2>/dev/null || true
+    # GitHub tokens: ghp_..., gho_..., ghu_..., ghs_..., ghr_...
+    git secrets --add 'gh[ipuors]_[A-Za-z0-9]{20,}' 2>/dev/null || true
+    # GitHub PAT: github_pat_...
+    git secrets --add 'github_pat_[A-Za-z0-9]{20,}' 2>/dev/null || true
+    # AWS access key
+    git secrets --add 'AKIA[0-9A-Z]{16}' 2>/dev/null || true
 
     # Scan staged files for secrets.
-    # Redirect stderr to stdout so any warnings are visible.
-    git secrets --scan --staged
+    git secrets --scan --cached
 else
     echo "git-secrets not found. Skipping secret scan."
     echo "Install from: https://github.com/awslabs/git-secrets"
