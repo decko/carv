@@ -206,9 +206,9 @@ impl Tool for EditFileTool {
                         )));
                     }
 
-                    (start, end)
+                    (start, Some(end))
                 } else {
-                    (start, start) // end_line unused for insert ops
+                    (start, None)
                 }
             }; // lock released
 
@@ -227,14 +227,16 @@ impl Tool for EditFileTool {
             let line_count = content.lines().count();
             match op {
                 EditOp::Replace => {
-                    if end_line >= line_count {
-                        return Ok(ToolResult::error(format!(
-                            "edit_file failed: end_anchor '{}' refers to line {} but \
-                             file has {} lines. File may have changed since last read_file.",
-                            end_anchor,
-                            end_line + 1,
-                            line_count
-                        )));
+                    if let Some(end) = end_line {
+                        if end >= line_count {
+                            return Ok(ToolResult::error(format!(
+                                "edit_file failed: end_anchor '{}' refers to line {} but \
+                                 file has {} lines. File may have changed since last read_file.",
+                                end_anchor,
+                                end + 1,
+                                line_count
+                            )));
+                        }
                     }
                 }
                 EditOp::InsertBefore | EditOp::InsertAfter => {
@@ -252,7 +254,9 @@ impl Tool for EditFileTool {
 
             // Apply the edit based on operation.
             let new_content = match op {
-                EditOp::Replace => replace_line_range(&content, start_line, end_line, text),
+                EditOp::Replace => {
+                    replace_line_range(&content, start_line, end_line.unwrap(), text)
+                }
                 EditOp::InsertBefore => insert_lines_before(&content, start_line, text),
                 EditOp::InsertAfter => insert_lines_after(&content, start_line, text),
             };
@@ -273,27 +277,27 @@ impl Tool for EditFileTool {
                     let msg = match op {
                         EditOp::Replace => format!(
                             "Replaced {} line(s) ({}→{} bytes) in {}",
-                            end_line - start_line + 1,
+                            end_line.unwrap() - start_line + 1,
                             old_bytes,
                             new_bytes,
                             resolved.display()
                         ),
-                        EditOp::InsertBefore | EditOp::InsertAfter => {
-                            let dir = if op == EditOp::InsertBefore {
-                                "before"
-                            } else {
-                                "after"
-                            };
-                            format!(
-                                "Inserted {} line(s) {} anchor '{}' ({}→{} bytes) in {}",
-                                text.lines().count(),
-                                dir,
-                                anchor,
-                                old_bytes,
-                                new_bytes,
-                                resolved.display()
-                            )
-                        }
+                        EditOp::InsertBefore => format!(
+                            "Inserted {} line(s) before anchor '{}' ({}→{} bytes) in {}",
+                            text.lines().count(),
+                            anchor,
+                            old_bytes,
+                            new_bytes,
+                            resolved.display()
+                        ),
+                        EditOp::InsertAfter => format!(
+                            "Inserted {} line(s) after anchor '{}' ({}→{} bytes) in {}",
+                            text.lines().count(),
+                            anchor,
+                            old_bytes,
+                            new_bytes,
+                            resolved.display()
+                        ),
                     };
                     Ok(ToolResult::ok(msg))
                 }
