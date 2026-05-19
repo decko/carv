@@ -130,7 +130,6 @@ impl Tool for EditFileTool {
                 Some(t) => t,
                 None => return Ok(ToolResult::error("missing required 'text' parameter")),
             };
-            let text_line_count = text.lines().count();
 
             // Reject empty text for insert operations — "insert nothing" is
             // almost certainly a caller mistake. (Replace treats empty text as
@@ -281,7 +280,7 @@ impl Tool for EditFileTool {
                         ),
                         EditOp::InsertBefore => format!(
                             "Inserted {} line(s) before anchor '{}' ({}→{} bytes) in {}",
-                            text_line_count,
+                            text.lines().count(),
                             anchor,
                             old_bytes,
                             new_bytes,
@@ -289,7 +288,7 @@ impl Tool for EditFileTool {
                         ),
                         EditOp::InsertAfter => format!(
                             "Inserted {} line(s) after anchor '{}' ({}→{} bytes) in {}",
-                            text_line_count,
+                            text.lines().count(),
                             anchor,
                             old_bytes,
                             new_bytes,
@@ -318,7 +317,10 @@ impl Tool for EditFileTool {
 /// no-op (returns `content` unchanged).
 ///
 /// Note: `str::lines()` normalizes `\r\n` → `\n`, so Windows-style line
-/// endings are converted to LF on write.
+/// endings are converted to LF on write. A trailing `\n` in `new_text` is
+/// treated as a line terminator and stripped (consistent with `lines()`
+/// semantics). To append a blank line after the last inserted line, end
+/// `new_text` with `"\n\n"`.
 fn insert_lines_before(content: &str, at: usize, new_text: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     debug_assert!(
@@ -760,6 +762,18 @@ mod tests {
         let content = "a\r\nb\r\n";
         let result = insert_lines_before(content, 0, "X");
         assert_eq!(result, "X\na\nb\n");
+    }
+
+    #[test]
+    fn insert_trailing_newline_in_text_stripped() {
+        // str::lines() treats a trailing \n as a terminator, not content.
+        // "foo\n" and "foo" produce the same insert. To append a blank
+        // line, end with "\n\n".
+        let content = "a\nb\n";
+        assert_eq!(
+            insert_lines_before(content, 1, "foo\n"),
+            insert_lines_before(content, 1, "foo")
+        );
     }
 
     // -----------------------------------------------------------------------
