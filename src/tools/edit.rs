@@ -103,6 +103,10 @@ impl Tool for EditFileTool {
                 }
             }
 
+            // Canonicalize the resolved path so the anchor cache key matches
+            // what notify_edit will use later (same pattern as read_file).
+            let resolved = resolved.canonicalize().unwrap_or(resolved);
+
             // Resolve anchors to line indices. Drop the lock before I/O.
             let (start_line, end_line) = {
                 let mut anchor_state = ctx.anchor_state.lock().expect("anchor state lock poisoned");
@@ -179,7 +183,6 @@ impl Tool for EditFileTool {
             // Write back.
             match tokio::fs::write(&resolved, &new_content).await {
                 Ok(()) => {
-                    let canonical = resolved.canonicalize().unwrap_or(resolved);
                     let old_bytes = content.len();
                     let new_bytes = new_content.len();
                     let lines_replaced = end_line - start_line + 1;
@@ -188,7 +191,7 @@ impl Tool for EditFileTool {
                     {
                         let mut anchor_state =
                             ctx.anchor_state.lock().expect("anchor state lock poisoned");
-                        anchor_state.notify_edit(&canonical);
+                        anchor_state.notify_edit(&resolved);
                     }
 
                     Ok(ToolResult::ok(format!(
@@ -196,7 +199,7 @@ impl Tool for EditFileTool {
                         lines_replaced,
                         old_bytes,
                         new_bytes,
-                        canonical.display()
+                        resolved.display()
                     )))
                 }
                 Err(e) => Ok(ToolResult::error(format!(
@@ -509,6 +512,43 @@ mod tests {
             "expected error, got: {}",
             result.content
         );
+    }
+
+    #[tokio::test]
+    async fn stale_anchor_after_external_modification() {
+        let dir = temp_dir("edit_stale_anchor");
+        let file = write_temp_file(&dir, "stale.rs", "line1\nline2\nline3\n");
+        let ctx = test_context(dir.clone());
+
+        // Prime the anchor cache.
+        let anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        let anchor_line3 = &anchors[2].0; // third line's anchor
+
+        // Simulate external modification: truncate the file to one line.
+        // The anchor cache still has 3 lines, but the file now has 1.
+        std::fs::write(&file, "only one line\n").unwrap();
+
+        // edit_file should detect the mismatch and refuse to edit.
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "anchor": anchor_line3,
+                    "end_anchor": anchor_line3,
+                    "text": "replaced"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("file has"));
+        assert!(result.content.contains("File may have changed"));
     }
 
     #[tokio::test]
