@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 /// Tool for anchor-based file editing.
 ///
-/// Replaces an inclusive range of lines — identified by anchor words from
-/// [`read_file`](crate::tools::fs::ReadFileTool) — with new text.
+/// Supports three operations: `replace` (default), `insert_before`, and
+/// `insert_after`. Uses stable word anchors from
+/// [`read_file`](crate::tools::fs::ReadFileTool) to target edit locations.
 pub struct EditFileTool;
 
 impl Tool for EditFileTool {
@@ -208,6 +209,8 @@ impl Tool for EditFileTool {
                     insert_lines_after(&content, start_line, text),
                     text.lines().count(),
                 ),
+                // "replace" is the default; the schema enum prevents unknown
+                // values in practice, but falling back to replace is safe.
                 _ => (
                     replace_line_range(&content, start_line, end_line, text),
                     end_line - start_line + 1,
@@ -297,7 +300,9 @@ fn insert_lines_before(content: &str, at: usize, new_text: &str) -> String {
 /// Same semantics as [`insert_lines_before`], but inserts after `at` instead
 /// of before. An empty `new_text` is a no-op.
 fn insert_lines_after(content: &str, at: usize, new_text: &str) -> String {
-    insert_lines_before(content, at + 1, new_text)
+    // saturating_add guards against usize::MAX overflow (not reachable
+    // in practice — the caller guards at < line_count).
+    insert_lines_before(content, at.saturating_add(1), new_text)
 }
 
 /// Replace lines from `start_line` to `end_line` (inclusive, 0-indexed) in
