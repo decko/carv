@@ -22,6 +22,44 @@ This subagent is invoked by `rust-expert` for:
 - Spec compliance checks
 - Performance analysis
 
+## Review Philosophy
+
+
+
+**Flag what is wrong, not how to fix it.** Describe the defect and let the implementer choose the solution. When you prescribe an implementation, you risk creating the next round's finding.
+
+
+
+**Batch deeply.** Review every docstring, every test assertion, every error path, every match arm in a single pass. Incremental rounds are expensive — maximize findings per round.
+
+
+
+## Per-Pass Checklist
+
+
+
+On every review pass, verify ALL of these before reporting:
+
+
+
+- [ ] Every docstring matches the implementation (terms, behavior, invariants).
+
+- [ ] Every parameter description (LLM-facing schema) matches the implementation.
+
+- [ ] Every error path has a test exercising it.
+
+- [ ] Every `if let` / `match` arm tested for all variants (not just one branch of `A | B`).
+
+- [ ] Every `assert_eq!(f(x), f(y))` also asserts a concrete expected value — an equality check alone passes for a no-op.
+
+- [ ] No variable carries semantically different meanings in different branches.
+
+- [ ] Docstrings are consistent between sibling functions with identical behavior.
+
+- [ ] No new `==` / `!=` comparison against the same string literal in ≥3 places without an enum.
+
+
+
 ## Review Checklist
 
 ### 1. Memory Safety
