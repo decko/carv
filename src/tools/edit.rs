@@ -130,12 +130,12 @@ impl Tool for EditFileTool {
                 Some(t) => t,
                 None => return Ok(ToolResult::error("missing required 'text' parameter")),
             };
+            let text_line_count = text.lines().count();
 
             // Reject empty text for insert operations — "insert nothing" is
             // almost certainly a caller mistake. (Replace treats empty text as
             // "blank the line", which is a meaningful operation.)
-            if matches!(op, EditOp::InsertBefore | EditOp::InsertAfter) && text.lines().count() == 0
-            {
+            if matches!(op, EditOp::InsertBefore | EditOp::InsertAfter) && text.is_empty() {
                 return Ok(ToolResult::error(
                     "'text' must be non-empty for insert operations",
                 ));
@@ -281,7 +281,7 @@ impl Tool for EditFileTool {
                         ),
                         EditOp::InsertBefore => format!(
                             "Inserted {} line(s) before anchor '{}' ({}→{} bytes) in {}",
-                            text.lines().count(),
+                            text_line_count,
                             anchor,
                             old_bytes,
                             new_bytes,
@@ -289,7 +289,7 @@ impl Tool for EditFileTool {
                         ),
                         EditOp::InsertAfter => format!(
                             "Inserted {} line(s) after anchor '{}' ({}→{} bytes) in {}",
-                            text.lines().count(),
+                            text_line_count,
                             anchor,
                             old_bytes,
                             new_bytes,
@@ -671,6 +671,43 @@ mod tests {
         assert!(result.content.contains("File may have changed"));
     }
 
+    #[tokio::test]
+    async fn stale_anchor_before_insert() {
+        let dir = temp_dir("edit_stale_insert_anchor");
+        let file = write_temp_file(&dir, "stale.rs", "line1\nline2\nline3\n");
+        let ctx = test_context(dir.clone());
+
+        // Prime the anchor cache.
+        let anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        let anchor_line3 = &anchors[2].0; // third line's anchor
+
+        // Truncate the file externally to one line. The anchor cache
+        // still reports 3 lines; insert_before should catch the mismatch
+        // via its start_line >= line_count guard.
+        std::fs::write(&file, "only one line\n").unwrap();
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "insert_before",
+                    "anchor": anchor_line3,
+                    "text": "inserted"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("file has"));
+        assert!(result.content.contains("File may have changed"));
+    }
+
     // -----------------------------------------------------------------------
     // insert_lines_before / insert_lines_after unit tests
     // -----------------------------------------------------------------------
@@ -874,19 +911,42 @@ mod tests {
         let file = write_temp_file(&dir, "target.rs", "a\nb\n");
         let ctx = test_context(dir.clone());
 
-        let anchors = {
-            let mut state = ctx.anchor_state.lock().unwrap();
-            state.get_anchors(&file).unwrap()
-        };
-        let (anchor, _) = &anchors[0];
-
+        // The empty-text guard fires before path resolution or anchor
+        // lookup — any anchor string works. We pass a dummy to keep the
+        // test focused on parameter validation.
         let tool = EditFileTool;
         let result = tool
             .execute(
                 json!({
                     "path": file.to_str().unwrap(),
                     "operation": "insert_before",
-                    "anchor": anchor,
+                    "anchor": "any-word",
+                    "text": ""
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .contains("'text' must be non-empty for insert operations"));
+    }
+
+    #[tokio::test]
+    async fn insert_after_empty_text_rejected() {
+        let dir = temp_dir("edit_insert_after_empty");
+        let file = write_temp_file(&dir, "target.rs", "a\nb\n");
+        let ctx = test_context(dir.clone());
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "insert_after",
+                    "anchor": "any-word",
                     "text": ""
                 }),
                 &ctx,
