@@ -8,6 +8,33 @@ use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+// ---------------------------------------------------------------------------
+// Operation enum
+// ---------------------------------------------------------------------------
+
+/// Operation dispatched by [`EditFileTool`].
+///
+/// Parsed once from the `operation` field in the tool input; all downstream
+/// matches are exhaustive, so the compiler catches a missing arm whenever a
+/// new variant is added.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum EditOp {
+    Replace,
+    InsertBefore,
+    InsertAfter,
+}
+
+impl EditOp {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "replace" => Some(Self::Replace),
+            "insert_before" => Some(Self::InsertBefore),
+            "insert_after" => Some(Self::InsertAfter),
+            _ => None,
+        }
+    }
+}
+
 /// Tool for anchor-based file editing.
 ///
 /// Supports three operations: `replace` (default), `insert_before`, and
@@ -69,15 +96,25 @@ impl Tool for EditFileTool {
                 Some(p) => p,
                 None => return Ok(ToolResult::error("missing required 'path' parameter")),
             };
-            let operation = input
+            let operation_str = input
                 .get("operation")
                 .and_then(Value::as_str)
                 .unwrap_or("replace");
+            let op = match EditOp::from_str(operation_str) {
+                Some(op) => op,
+                None => {
+                    return Ok(ToolResult::error(format!(
+                        "edit_file failed: unknown operation '{}'. \
+                         Valid: replace, insert_before, insert_after",
+                        operation_str
+                    )))
+                }
+            };
             let anchor = match input.get("anchor").and_then(Value::as_str) {
                 Some(a) => a,
                 None => return Ok(ToolResult::error("missing required 'anchor' parameter")),
             };
-            let end_anchor = if operation == "replace" {
+            let end_anchor = if op == EditOp::Replace {
                 match input.get("end_anchor").and_then(Value::as_str) {
                     Some(a) => a,
                     None => {
@@ -137,7 +174,7 @@ impl Tool for EditFileTool {
                     }
                 };
 
-                if operation == "replace" {
+                if op == EditOp::Replace {
                     let end = match anchors.iter().position(|(a, _)| a == end_anchor) {
                         Some(idx) => idx,
                         None => {
@@ -179,7 +216,7 @@ impl Tool for EditFileTool {
 
             // Guard: ensure referenced lines exist in the current file content.
             let line_count = content.lines().count();
-            if operation == "replace" {
+            if op == EditOp::Replace {
                 if end_line >= line_count {
                     return Ok(ToolResult::error(format!(
                         "edit_file failed: end_anchor '{}' refers to line {} but \
@@ -200,21 +237,10 @@ impl Tool for EditFileTool {
             }
 
             // Apply the edit based on operation.
-            let (new_content, lines_changed) = match operation {
-                "insert_before" => (
-                    insert_lines_before(&content, start_line, text),
-                    text.lines().count(),
-                ),
-                "insert_after" => (
-                    insert_lines_after(&content, start_line, text),
-                    text.lines().count(),
-                ),
-                // "replace" is the default; the schema enum prevents unknown
-                // values in practice, but falling back to replace is safe.
-                _ => (
-                    replace_line_range(&content, start_line, end_line, text),
-                    end_line - start_line + 1,
-                ),
+            let new_content = match op {
+                EditOp::Replace => replace_line_range(&content, start_line, end_line, text),
+                EditOp::InsertBefore => insert_lines_before(&content, start_line, text),
+                EditOp::InsertAfter => insert_lines_after(&content, start_line, text),
             };
 
             // Write back.
@@ -230,32 +256,30 @@ impl Tool for EditFileTool {
                         anchor_state.notify_edit(&resolved);
                     }
 
-                    let msg = if operation == "replace" {
-                        format!(
+                    let msg = match op {
+                        EditOp::Replace => format!(
                             "Replaced {} line(s) ({}→{} bytes) in {}",
-                            lines_changed,
+                            end_line - start_line + 1,
                             old_bytes,
                             new_bytes,
                             resolved.display()
-                        )
-                    } else if operation == "insert_before" {
-                        format!(
+                        ),
+                        EditOp::InsertBefore => format!(
                             "Inserted {} line(s) before anchor '{}' ({}→{} bytes) in {}",
-                            lines_changed,
+                            text.lines().count(),
                             anchor,
                             old_bytes,
                             new_bytes,
                             resolved.display()
-                        )
-                    } else {
-                        format!(
+                        ),
+                        EditOp::InsertAfter => format!(
                             "Inserted {} line(s) after anchor '{}' ({}→{} bytes) in {}",
-                            lines_changed,
+                            text.lines().count(),
                             anchor,
                             old_bytes,
                             new_bytes,
                             resolved.display()
-                        )
+                        ),
                     };
                     Ok(ToolResult::ok(msg))
                 }
@@ -279,6 +303,12 @@ impl Tool for EditFileTool {
 /// no-op (returns `content` unchanged).
 fn insert_lines_before(content: &str, at: usize, new_text: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
+    debug_assert!(
+        at <= lines.len(),
+        "insert_lines_before: at {} out of bounds ({} lines)",
+        at,
+        lines.len()
+    );
     let new_lines: Vec<&str> = new_text.lines().collect();
     if new_lines.is_empty() {
         return content.to_string();
