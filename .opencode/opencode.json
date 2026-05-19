@@ -1,6 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [],
+  "lsp": {
+    "rust": {
+      "command": ["rust-analyzer"],
+      "extensions": ["rs"]
+    }
+  },
   "agent": {
     "rust-expert": { "model": "opencode-go/deepseek-v4-pro" },
     "rust-coder": { "model": "opencode-go/deepseek-v4-flash" },
