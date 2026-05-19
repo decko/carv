@@ -171,3 +171,27 @@ If `cargo clippy` fails, fix warnings. If `cargo test` fails, fix tests or the c
 - Don't produce multi-file search/read output without a file identifier per result line
 - Don't use `assert!(x <= N)` where N=0 means "the feature under test doesn't work at all" — use `assert_eq!`
 - Don't ignore parse failures in tree-sitter operations
+
+## Code Generation Rules
+
+Apply these while writing any code:
+
+| Rule | Trigger | Action |
+|------|---------|--------|
+| **String dispatch → enum** | A string value branches behavior in ≥3 places | Parse into a local enum once; downstream matches become exhaustive |
+| **Test assertions pin concrete values** | `assert_eq!(f(x), f(y))` without a concrete expected string | Also assert `f(x)` against the literal output. A no-op returning `x` unchanged passes the equality check |
+| **Documentation parity** | Adding a doc comment to one function | Grep for sibling functions with the same behavior and sync their docs |
+| **Semantic variable names** | A variable carries different meanings in different branches | Rename into separate variables or inline the expressions |
+| **Option over sentinel** | A value like `(start, start)` with comment `// unused for insert ops` | Use `None` — the type system enforces what comments only promise |
+
+## Pre-Commit Self-Check
+
+Before returning code, verify:
+
+- [ ] Every `==` / `!=` comparison against the same string literal in ≥3 places → enum-refactored
+- [ ] Every `assert_eq!(f(x), f(y))` pins a concrete expected value
+- [ ] No variable carries semantically different meanings in different branches
+- [ ] Docstrings match between sibling functions with identical behavior
+- [ ] Every new error path has a test exercising it
+- [ ] Every `if let` / `match` arm tested for all variants (not just one)
+- [ ] `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt -- --check`
