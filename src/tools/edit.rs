@@ -499,6 +499,13 @@ mod tests {
         assert_eq!(replace_line_range(content, 1, 1, "X"), "a\nX\nc\n");
     }
 
+    #[test]
+    fn replace_double_newline_appends_blank_line() {
+        // "\n\n" in new_text keeps content + appends a trailing blank line.
+        let content = "a\nb\nc\n";
+        assert_eq!(replace_line_range(content, 1, 1, "X\n\n"), "a\nX\n\nc\n");
+    }
+
     // -----------------------------------------------------------------------
     // EditFileTool integration tests
     // -----------------------------------------------------------------------
@@ -794,6 +801,13 @@ mod tests {
         // Both inputs produce the same concrete output — trailing \n is stripped.
         assert_eq!(insert_lines_before(content, 1, "foo\n"), "a\nfoo\nb\n");
         assert_eq!(insert_lines_before(content, 1, "foo"), "a\nfoo\nb\n");
+    }
+
+    #[test]
+    fn insert_double_newline_appends_blank_line() {
+        // "\n\n" keeps one line of content + appends a trailing blank line.
+        let content = "a\nb\n";
+        assert_eq!(insert_lines_before(content, 1, "foo\n\n"), "a\nfoo\n\nb\n");
     }
 
     // -----------------------------------------------------------------------
