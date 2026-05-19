@@ -79,7 +79,7 @@ impl Tool for EditFileTool {
                 },
                 "text": {
                     "type": "string",
-                    "description": "New text to insert or replace with. Include newline characters between lines as needed. For insert operations, a trailing newline is treated as a line terminator and stripped; to also insert a trailing blank line, end with '\\n\\n'."
+                    "description": "New text to insert or replace with. Use '\\n' to separate lines. A trailing newline is treated as a line terminator and stripped for all operations. For insert operations, to also append a trailing blank line, end with '\\n\\n'."
                 }
             },
             "required": ["path", "anchor", "text"]
@@ -367,14 +367,15 @@ fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_tex
     let mut new_lines: Vec<&str> = new_text.lines().collect();
 
     // An empty replacement means "make the line empty", not "delete it".
-    // `"".lines()` returns zero items, so push an empty string to preserve
-    // the line in the output.
+    // `"".lines()` returns zero items (`new_lines.is_empty()` is true iff
+    // `new_text` is empty), so push an empty string to preserve the line
+    // in the output.
     //
     // NOTE: For single-line files, an empty replacement collapses the file
     // to empty (the trailing-newline logic treats a sole empty line as an
     // empty result). This is an edge case; the guard above ensures line
     // indices are always valid.
-    if new_lines.is_empty() && new_text.is_empty() {
+    if new_lines.is_empty() {
         new_lines.push("");
     }
 
