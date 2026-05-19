@@ -79,7 +79,7 @@ impl Tool for EditFileTool {
                 },
                 "text": {
                     "type": "string",
-                    "description": "New text to insert or replace with. Include newline characters between lines as needed."
+                    "description": "New text to insert or replace with. Include newline characters between lines as needed. For insert operations, a trailing newline is treated as a line terminator and stripped; to also insert a trailing blank line, end with '\\n\\n'."
                 }
             },
             "required": ["path", "anchor", "text"]
@@ -278,22 +278,22 @@ impl Tool for EditFileTool {
                             new_bytes,
                             resolved.display()
                         ),
-                        EditOp::InsertBefore => format!(
-                            "Inserted {} line(s) before anchor '{}' ({}→{} bytes) in {}",
-                            text.lines().count(),
-                            anchor,
-                            old_bytes,
-                            new_bytes,
-                            resolved.display()
-                        ),
-                        EditOp::InsertAfter => format!(
-                            "Inserted {} line(s) after anchor '{}' ({}→{} bytes) in {}",
-                            text.lines().count(),
-                            anchor,
-                            old_bytes,
-                            new_bytes,
-                            resolved.display()
-                        ),
+                        EditOp::InsertBefore | EditOp::InsertAfter => {
+                            let dir = if op == EditOp::InsertBefore {
+                                "before"
+                            } else {
+                                "after"
+                            };
+                            format!(
+                                "Inserted {} line(s) {} anchor '{}' ({}→{} bytes) in {}",
+                                text.lines().count(),
+                                dir,
+                                anchor,
+                                old_bytes,
+                                new_bytes,
+                                resolved.display()
+                            )
+                        }
                     };
                     Ok(ToolResult::ok(msg))
                 }
@@ -452,6 +452,13 @@ mod tests {
         let content = "keep\nremove\nkeep\n";
         let result = replace_line_range(content, 1, 1, "");
         assert_eq!(result, "keep\n\nkeep\n");
+    }
+
+    #[test]
+    fn replace_single_line_with_empty_collapses_file() {
+        // Known edge case: sole line + empty replacement → empty file.
+        // (Multi-line files preserve the blank line; single-line collapses.)
+        assert_eq!(replace_line_range("only\n", 0, 0, ""), "");
     }
 
     #[test]
@@ -770,10 +777,9 @@ mod tests {
         // "foo\n" and "foo" produce the same insert. To append a blank
         // line, end with "\n\n".
         let content = "a\nb\n";
-        assert_eq!(
-            insert_lines_before(content, 1, "foo\n"),
-            insert_lines_before(content, 1, "foo")
-        );
+        // Both inputs produce the same concrete output — trailing \n is stripped.
+        assert_eq!(insert_lines_before(content, 1, "foo\n"), "a\nfoo\nb\n");
+        assert_eq!(insert_lines_before(content, 1, "foo"), "a\nfoo\nb\n");
     }
 
     // -----------------------------------------------------------------------
