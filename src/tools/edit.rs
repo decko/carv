@@ -131,6 +131,16 @@ impl Tool for EditFileTool {
                 None => return Ok(ToolResult::error("missing required 'text' parameter")),
             };
 
+            // Reject empty text for insert operations — "insert nothing" is
+            // almost certainly a caller mistake. (Replace treats empty text as
+            // "blank the line", which is a meaningful operation.)
+            if matches!(op, EditOp::InsertBefore | EditOp::InsertAfter) && text.lines().count() == 0
+            {
+                return Ok(ToolResult::error(
+                    "'text' must be non-empty for insert operations",
+                ));
+            }
+
             // Resolve path.
             let resolved = if Path::new(path_str).is_absolute() {
                 PathBuf::from(path_str)
@@ -216,24 +226,29 @@ impl Tool for EditFileTool {
 
             // Guard: ensure referenced lines exist in the current file content.
             let line_count = content.lines().count();
-            if op == EditOp::Replace {
-                if end_line >= line_count {
-                    return Ok(ToolResult::error(format!(
-                        "edit_file failed: end_anchor '{}' refers to line {} but \
-                         file has {} lines. File may have changed since last read_file.",
-                        end_anchor,
-                        end_line + 1,
-                        line_count
-                    )));
+            match op {
+                EditOp::Replace => {
+                    if end_line >= line_count {
+                        return Ok(ToolResult::error(format!(
+                            "edit_file failed: end_anchor '{}' refers to line {} but \
+                             file has {} lines. File may have changed since last read_file.",
+                            end_anchor,
+                            end_line + 1,
+                            line_count
+                        )));
+                    }
                 }
-            } else if start_line >= line_count {
-                return Ok(ToolResult::error(format!(
-                    "edit_file failed: anchor '{}' refers to line {} but \
-                     file has {} lines. File may have changed since last read_file.",
-                    anchor,
-                    start_line + 1,
-                    line_count
-                )));
+                EditOp::InsertBefore | EditOp::InsertAfter => {
+                    if start_line >= line_count {
+                        return Ok(ToolResult::error(format!(
+                            "edit_file failed: anchor '{}' refers to line {} but \
+                             file has {} lines. File may have changed since last read_file.",
+                            anchor,
+                            start_line + 1,
+                            line_count
+                        )));
+                    }
+                }
             }
 
             // Apply the edit based on operation.
@@ -301,6 +316,9 @@ impl Tool for EditFileTool {
 /// Splits the file into lines, inserts the new lines at position `at`, and
 /// rejoins. Trailing-newline status is preserved. An empty `new_text` is a
 /// no-op (returns `content` unchanged).
+///
+/// Note: `str::lines()` normalizes `\r\n` → `\n`, so Windows-style line
+/// endings are converted to LF on write.
 fn insert_lines_before(content: &str, at: usize, new_text: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     debug_assert!(
@@ -699,6 +717,14 @@ mod tests {
         assert_eq!(result, "a\nX\nb\nc");
     }
 
+    #[test]
+    fn insert_crlf_normalized_to_lf() {
+        // lines() normalizes \r\n → \n — same behavior as replace_line_range.
+        let content = "a\r\nb\r\n";
+        let result = insert_lines_before(content, 0, "X");
+        assert_eq!(result, "X\na\nb\n");
+    }
+
     // -----------------------------------------------------------------------
     // EditFileTool insert_before / insert_after integration tests
     // -----------------------------------------------------------------------
@@ -815,6 +841,63 @@ mod tests {
         assert_eq!(new_anchors.len(), 2);
         assert_eq!(new_anchors[0].1, "prefix");
         assert_eq!(new_anchors[1].1, "original");
+    }
+
+    #[tokio::test]
+    async fn unknown_operation_rejected() {
+        let dir = temp_dir("edit_unknown_op");
+        let file = write_temp_file(&dir, "f.rs", "a\n");
+        let ctx = test_context(dir.clone());
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "delete",
+                    "anchor": "any-word",
+                    "text": "replacement"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("unknown operation"));
+        assert!(result.content.contains("delete"));
+    }
+
+    #[tokio::test]
+    async fn insert_empty_text_rejected() {
+        let dir = temp_dir("edit_insert_empty_text");
+        let file = write_temp_file(&dir, "target.rs", "a\nb\n");
+        let ctx = test_context(dir.clone());
+
+        let anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        let (anchor, _) = &anchors[0];
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "insert_before",
+                    "anchor": anchor,
+                    "text": ""
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .contains("'text' must be non-empty for insert operations"));
     }
 
     #[tokio::test]
