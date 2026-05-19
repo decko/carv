@@ -170,6 +170,78 @@ When review feedback arrives on a PR originally built by `rust-coder` or `rust-s
 3. After the coder returns, re-run `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt -- --check`
 4. If all four pass, commit and push — do NOT re-submit to reviewer unless the fixes changed the PR's design
 
+### Code Generation Rules
+
+Apply these to all code you write (DENSE tasks). Include them in every delegation prompt to `rust-coder` for IMPLEMENT tasks:
+
+| Rule | Trigger | Action |
+
+|------|---------|--------|
+
+| **String dispatch → enum** | A string value branches in ≥3 places | Parse into a local enum once; downstream matches become exhaustive |
+
+| **Test assertions pin concrete values** | `assert_eq!(f(x), f(y))` without a concrete expected string | Also assert `f(x)` against the literal output. A no-op returning `x` unchanged passes the equality check |
+
+| **Documentation parity** | Adding a doc comment to one function | Grep for sibling functions with the same behavior and sync their docs |
+
+| **Semantic variable names** | A variable carries different meanings in different branches | Rename into separate variables or inline the expressions |
+
+| **Option over sentinel** | A value like `(start, start)` with comment `// unused for insert ops` | Use `None` — the type system enforces what comments only promise |
+
+### Pre-Review Self-Check (MANDATORY)
+
+Run this checklist **before delegating to `rust-reviewer`** on any PR:
+
+- [ ] Every `==` / `!=` comparison against the same string literal in ≥3 places → enum-refactored
+
+- [ ] Every `assert_eq!(f(x), f(y))` pins a concrete expected value
+
+- [ ] No variable carries semantically different meanings in different branches
+
+- [ ] Docstrings match between sibling functions with identical behavior
+
+- [ ] Every new error path has a test exercising it
+
+- [ ] Every `if let` / `match` arm tested for all variants (not just one)
+
+- [ ] `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt -- --check`
+
+### Review Response Protocol (MANDATORY)
+
+When responding to review feedback:
+
+1. **Enumerate ALL unreviewed rounds** — grep for `"## Rust Specialist Review"` in the PR reviews and list every round not yet addressed. Do NOT assume the latest is the only one.
+
+2. **List every finding** from every unreviewed round in a single table.
+
+3. **Batch all fixes** into a single commit per review cycle.
+
+4. **Reply with a table** mapping each finding to its resolution.
+
+5. **Re-verify** with `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt -- --check`.
+
+### Review Budget
+
+After **3 review rounds** on a single PR:
+
+- Defer remaining non-blocking findings to follow-up issues.
+
+- Offer: "3 review rounds completed. Remaining: [list]. Create follow-up issues or continue?"
+
+- Blocking findings (correctness, security, memory safety) are exceptions — always fix.
+
+### Merge Gate
+
+- **Never merge unless the user explicitly instructs you to.** "Merge when ready", "squash-merge", "merge it" — these all count as explicit instruction.
+
+- When CI passes and all findings are resolved, offer the command:
+
+  ```
+
+  PR #N is ready. Merge with: gh pr merge N --repo decko/carv --squash --delete-branch
+
+  ```
+
 ### Scout-First Rule
 
 **Before delegating to `rust-coder` for IMPLEMENT tasks, always run `rust-scout` first.** The scout finds relevant patterns, existing implementations, and context files. Pass the scout's output in the coder's delegation prompt. This prevents the coder from re-discovering patterns mid-implementation and produces better first-pass code.
