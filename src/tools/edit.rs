@@ -80,34 +80,20 @@ impl Tool for EditFileTool {
                 ctx.workspace_root.join(path_str)
             };
 
-            // Path traversal guard — same logic as write_file.
-            {
-                let root_canon = ctx
-                    .workspace_root
-                    .canonicalize()
-                    .unwrap_or_else(|_| ctx.workspace_root.clone());
-                let mut probe = resolved.clone();
-                let bound = loop {
-                    match probe.canonicalize() {
-                        Ok(c) => break c,
-                        Err(_) => match probe.parent() {
-                            Some(parent) => probe = parent.to_path_buf(),
-                            None => break resolved.clone(),
-                        },
-                    }
+            // Resolve and validate the path (shared with write_file).
+            let resolved =
+                match crate::tools::check_path_in_workspace(&resolved, &ctx.workspace_root) {
+                    Ok(canon) => canon,
+                    Err(msg) => return Ok(ToolResult::error(format!("edit_file failed: {msg}"))),
                 };
-                if !bound.starts_with(&root_canon) {
-                    return Ok(ToolResult::error(
-                        "edit_file failed: path escapes workspace root",
-                    ));
-                }
-            }
-
-            // Canonicalize the resolved path so the anchor cache key matches
-            // what notify_edit will use later (same pattern as read_file).
-            let resolved = resolved.canonicalize().unwrap_or(resolved);
 
             // Resolve anchors to line indices. Drop the lock before I/O.
+            //
+            // NOTE: There is a TOCTOU window between anchor resolution (from
+            // cache) and the file read below. The `end_line >= line_count`
+            // guard catches file shrinkage, but content changes that preserve
+            // line count are not detected. This is inherent to the caching
+            // design and acceptable for this scope.
             let (start_line, end_line) = {
                 let mut anchor_state = ctx.anchor_state.lock().expect("anchor state lock poisoned");
                 let anchors = match anchor_state.get_anchors(&resolved) {
@@ -229,9 +215,21 @@ fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_tex
     // An empty replacement means "make the line empty", not "delete it".
     // `"".lines()` returns zero items, so push an empty string to preserve
     // the line in the output.
+    //
+    // NOTE: For single-line files, an empty replacement collapses the file
+    // to empty (the trailing-newline logic treats a sole empty line as an
+    // empty result). This is an edge case; the guard above ensures line
+    // indices are always valid.
     if new_lines.is_empty() && new_text.is_empty() {
         new_lines.push("");
     }
+
+    debug_assert!(
+        end_line < lines.len(),
+        "replace_line_range: end_line {} out of bounds ({} lines)",
+        end_line,
+        lines.len()
+    );
 
     let mut out: Vec<&str> =
         Vec::with_capacity(lines.len() + new_lines.len().saturating_sub(end_line - start_line + 1));
@@ -253,38 +251,8 @@ fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_tex
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashing::state::AnchorState;
+    use crate::tools::test_utils::{temp_dir, test_context, write_temp_file};
     use serde_json::json;
-    use std::io::Write;
-    use std::sync::{Arc, Mutex};
-
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("carv-test").join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn write_temp_file(dir: &Path, name: &str, content: &str) -> PathBuf {
-        let path = dir.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(content.as_bytes()).unwrap();
-        path
-    }
-
-    fn test_context(workspace_root: PathBuf) -> ToolContext {
-        ToolContext {
-            workspace_root,
-            anchor_state: Arc::new(Mutex::new(AnchorState::new())),
-        }
-    }
 
     // -----------------------------------------------------------------------
     // replace_line_range unit tests

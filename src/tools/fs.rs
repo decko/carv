@@ -143,29 +143,10 @@ impl Tool for WriteFileTool {
                 ctx.workspace_root.join(path_str)
             };
 
-            // Path traversal guard: the resolved path must stay within the
-            // workspace.  Walk up to the nearest existing ancestor so we can
-            // canonicalize and compare even when the target file is new.
+            // Path traversal guard (shared with edit_file).
+            if let Err(msg) = crate::tools::check_path_in_workspace(&resolved, &ctx.workspace_root)
             {
-                let root_canon = ctx
-                    .workspace_root
-                    .canonicalize()
-                    .unwrap_or_else(|_| ctx.workspace_root.clone());
-                let mut probe = resolved.clone();
-                let bound = loop {
-                    match probe.canonicalize() {
-                        Ok(c) => break c,
-                        Err(_) => match probe.parent() {
-                            Some(parent) => probe = parent.to_path_buf(),
-                            None => break resolved.clone(),
-                        },
-                    }
-                };
-                if !bound.starts_with(&root_canon) {
-                    return Ok(ToolResult::error(
-                        "write_file failed: path escapes workspace root",
-                    ));
-                }
+                return Ok(ToolResult::error(format!("write_file failed: {msg}")));
             }
 
             match tokio::fs::write(&resolved, content).await {
@@ -347,46 +328,10 @@ impl Tool for ListFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::{Arc, Mutex};
-
     use crate::hashing::state::AnchorState;
+    use crate::tools::test_utils::{temp_dir, test_context, write_temp_file};
     use serde_json::json;
-
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
-    /// Create an empty temporary directory and return its path.
-    ///
-    /// Removes any leftover directory from a previous run first, so tests
-    /// start with a clean slate regardless of state on disk.
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("carv-test").join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// Write `content` to a file at `dir/name` and return the full path.
-    fn write_temp_file(dir: &Path, name: &str, content: &str) -> PathBuf {
-        let path = dir.join(name);
-        // Ensure parent directory exists.
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(content.as_bytes()).unwrap();
-        path
-    }
-
-    /// Create a minimal `ToolContext` for a given workspace root.
-    fn test_context(workspace_root: PathBuf) -> ToolContext {
-        ToolContext {
-            workspace_root,
-            anchor_state: Arc::new(Mutex::new(AnchorState::new())),
-        }
-    }
+    use std::sync::{Arc, Mutex};
 
     // -----------------------------------------------------------------------
     // ReadFileTool tests
