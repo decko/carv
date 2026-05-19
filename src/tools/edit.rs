@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// Parsed once from the `operation` field in the tool input; all downstream
 /// matches are exhaustive, so the compiler catches a missing arm whenever a
 /// new variant is added.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum EditOp {
     Replace,
     InsertBefore,
@@ -79,7 +79,7 @@ impl Tool for EditFileTool {
                 },
                 "text": {
                     "type": "string",
-                    "description": "New text to insert or replace with. Use '\\n' to separate lines. A trailing newline is treated as a line terminator and stripped for all operations. For insert operations, to also append a trailing blank line, end with '\\n\\n'."
+                    "description": "New text to insert or replace with. Use '\\n' to separate lines. A trailing newline is treated as a line terminator and stripped for all operations. To also produce a trailing blank line in the output, end with '\\n\\n'."
                 }
             },
             "required": ["path", "anchor", "text"]
@@ -361,6 +361,11 @@ fn insert_lines_after(content: &str, at: usize, new_text: &str) -> String {
 /// Splits the file into lines, replaces the specified range, and rejoins.
 /// Trailing-newline status is preserved.  The replacement text itself may
 /// contain newlines to introduce additional lines.
+///
+/// Note: `str::lines()` normalizes `\r\n` → `\n`, so Windows-style line
+/// endings are converted to LF on write. A trailing `\n` in `new_text` is
+/// treated as a line terminator and stripped; `"X\n"` and `"X"` produce
+/// the same replacement.
 fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_text: &str) -> String {
     let has_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
@@ -484,6 +489,14 @@ mod tests {
         let content = "before\nold\nafter\n";
         let result = replace_line_range(content, 1, 1, "one\ntwo\nthree");
         assert_eq!(result, "before\none\ntwo\nthree\nafter\n");
+    }
+
+    #[test]
+    fn replace_trailing_newline_in_text_stripped() {
+        // str::lines() strips a trailing \n — same as for insert operations.
+        let content = "a\nb\nc\n";
+        assert_eq!(replace_line_range(content, 1, 1, "X\n"), "a\nX\nc\n");
+        assert_eq!(replace_line_range(content, 1, 1, "X"), "a\nX\nc\n");
     }
 
     // -----------------------------------------------------------------------
