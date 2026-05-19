@@ -1,8 +1,8 @@
 //! edit_file tool — anchor-based file editing.
 //!
 //! Uses stable word anchors (from [`read_file`]) to target edit locations.
-//! This module implements the `replace` operation; `insert_before`,
-//! `insert_after`, and multi-file batching are implemented in subsequent PRs.
+//! Supports three operations: `replace` (the default), `insert_before`,
+//! and `insert_after`. Multi-file batching is implemented in a subsequent PR.
 
 use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
@@ -21,7 +21,10 @@ impl Tool for EditFileTool {
 
     fn description(&self) -> &str {
         "Edit a file using stable anchor-based line references.\n\
-         Replaces lines from anchor to end_anchor (inclusive) with new text.\n\
+         Supports three operations:\n\
+         - replace (default): replace lines from anchor to end_anchor (inclusive)\n\
+         - insert_before: insert new lines before the anchor line\n\
+         - insert_after: insert new lines after the anchor line\n\
          Use read_file to obtain anchor words for the lines you want to edit."
     }
 
@@ -33,20 +36,25 @@ impl Tool for EditFileTool {
                     "type": "string",
                     "description": "Path to the file to edit, relative to the project root or absolute within the workspace"
                 },
+                "operation": {
+                    "type": "string",
+                    "enum": ["replace", "insert_before", "insert_after"],
+                    "description": "Edit operation: replace (default), insert_before, or insert_after"
+                },
                 "anchor": {
                     "type": "string",
-                    "description": "Anchor word identifying the first line of the range to replace (from read_file output)"
+                    "description": "Anchor word identifying the target line (from read_file output)"
                 },
                 "end_anchor": {
                     "type": "string",
-                    "description": "Anchor word identifying the last line of the range to replace, inclusive (from read_file output)"
+                    "description": "Anchor word identifying the last line of the range to replace, inclusive. Required for 'replace' operation."
                 },
                 "text": {
                     "type": "string",
-                    "description": "New text to replace the range with. Include newline characters between lines as needed."
+                    "description": "New text to insert or replace with. Include newline characters between lines as needed."
                 }
             },
-            "required": ["path", "anchor", "end_anchor", "text"]
+            "required": ["path", "anchor", "text"]
         })
     }
 
@@ -60,13 +68,25 @@ impl Tool for EditFileTool {
                 Some(p) => p,
                 None => return Ok(ToolResult::error("missing required 'path' parameter")),
             };
+            let operation = input
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or("replace");
             let anchor = match input.get("anchor").and_then(Value::as_str) {
                 Some(a) => a,
                 None => return Ok(ToolResult::error("missing required 'anchor' parameter")),
             };
-            let end_anchor = match input.get("end_anchor").and_then(Value::as_str) {
-                Some(a) => a,
-                None => return Ok(ToolResult::error("missing required 'end_anchor' parameter")),
+            let end_anchor = if operation == "replace" {
+                match input.get("end_anchor").and_then(Value::as_str) {
+                    Some(a) => a,
+                    None => {
+                        return Ok(ToolResult::error(
+                            "missing required 'end_anchor' for replace operation",
+                        ))
+                    }
+                }
+            } else {
+                ""
             };
             let text = match input.get("text").and_then(Value::as_str) {
                 Some(t) => t,
@@ -115,29 +135,34 @@ impl Tool for EditFileTool {
                         )))
                     }
                 };
-                let end = match anchors.iter().position(|(a, _)| a == end_anchor) {
-                    Some(idx) => idx,
-                    None => {
+
+                if operation == "replace" {
+                    let end = match anchors.iter().position(|(a, _)| a == end_anchor) {
+                        Some(idx) => idx,
+                        None => {
+                            return Ok(ToolResult::error(format!(
+                                "edit_file failed: end_anchor '{}' not found in '{}'. \
+                                 Use read_file to get current anchors.",
+                                end_anchor, path_str
+                            )))
+                        }
+                    };
+
+                    if end < start {
                         return Ok(ToolResult::error(format!(
-                            "edit_file failed: end_anchor '{}' not found in '{}'. \
-                             Use read_file to get current anchors.",
-                            end_anchor, path_str
-                        )))
+                            "edit_file failed: end_anchor '{}' (line {}) comes \
+                             before anchor '{}' (line {})",
+                            end_anchor,
+                            end + 1,
+                            anchor,
+                            start + 1
+                        )));
                     }
-                };
 
-                if end < start {
-                    return Ok(ToolResult::error(format!(
-                        "edit_file failed: end_anchor '{}' (line {}) comes \
-                         before anchor '{}' (line {})",
-                        end_anchor,
-                        end + 1,
-                        anchor,
-                        start + 1
-                    )));
+                    (start, end)
+                } else {
+                    (start, start) // end_line unused for insert ops
                 }
-
-                (start, end)
             }; // lock released
 
             // Read file from disk.
@@ -153,25 +178,47 @@ impl Tool for EditFileTool {
 
             // Guard: ensure referenced lines exist in the current file content.
             let line_count = content.lines().count();
-            if end_line >= line_count {
+            if operation == "replace" {
+                if end_line >= line_count {
+                    return Ok(ToolResult::error(format!(
+                        "edit_file failed: end_anchor '{}' refers to line {} but \
+                         file has {} lines. File may have changed since last read_file.",
+                        end_anchor,
+                        end_line + 1,
+                        line_count
+                    )));
+                }
+            } else if start_line >= line_count {
                 return Ok(ToolResult::error(format!(
-                    "edit_file failed: end_anchor '{}' refers to line {} but \
+                    "edit_file failed: anchor '{}' refers to line {} but \
                      file has {} lines. File may have changed since last read_file.",
-                    end_anchor,
-                    end_line + 1,
+                    anchor,
+                    start_line + 1,
                     line_count
                 )));
             }
 
-            // Apply the replace.
-            let new_content = replace_line_range(&content, start_line, end_line, text);
+            // Apply the edit based on operation.
+            let (new_content, lines_changed) = match operation {
+                "insert_before" => (
+                    insert_lines_before(&content, start_line, text),
+                    text.lines().count(),
+                ),
+                "insert_after" => (
+                    insert_lines_after(&content, start_line, text),
+                    text.lines().count(),
+                ),
+                _ => (
+                    replace_line_range(&content, start_line, end_line, text),
+                    end_line - start_line + 1,
+                ),
+            };
 
             // Write back.
             match tokio::fs::write(&resolved, &new_content).await {
                 Ok(()) => {
                     let old_bytes = content.len();
                     let new_bytes = new_content.len();
-                    let lines_replaced = end_line - start_line + 1;
 
                     // Invalidate anchor cache so the next read_file reflects the edit.
                     {
@@ -180,13 +227,34 @@ impl Tool for EditFileTool {
                         anchor_state.notify_edit(&resolved);
                     }
 
-                    Ok(ToolResult::ok(format!(
-                        "Replaced {} line(s) ({}→{} bytes) in {}",
-                        lines_replaced,
-                        old_bytes,
-                        new_bytes,
-                        resolved.display()
-                    )))
+                    let msg = if operation == "replace" {
+                        format!(
+                            "Replaced {} line(s) ({}→{} bytes) in {}",
+                            lines_changed,
+                            old_bytes,
+                            new_bytes,
+                            resolved.display()
+                        )
+                    } else if operation == "insert_before" {
+                        format!(
+                            "Inserted {} line(s) before anchor '{}' ({}→{} bytes) in {}",
+                            lines_changed,
+                            anchor,
+                            old_bytes,
+                            new_bytes,
+                            resolved.display()
+                        )
+                    } else {
+                        format!(
+                            "Inserted {} line(s) after anchor '{}' ({}→{} bytes) in {}",
+                            lines_changed,
+                            anchor,
+                            old_bytes,
+                            new_bytes,
+                            resolved.display()
+                        )
+                    };
+                    Ok(ToolResult::ok(msg))
                 }
                 Err(e) => Ok(ToolResult::error(format!(
                     "edit_file failed to write '{}': {e}",
@@ -200,6 +268,37 @@ impl Tool for EditFileTool {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Insert lines from `new_text` before line `at` (0-indexed) in `content`.
+///
+/// Splits the file into lines, inserts the new lines at position `at`, and
+/// rejoins. Trailing-newline status is preserved. An empty `new_text` is a
+/// no-op (returns `content` unchanged).
+fn insert_lines_before(content: &str, at: usize, new_text: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let new_lines: Vec<&str> = new_text.lines().collect();
+    if new_lines.is_empty() {
+        return content.to_string();
+    }
+    let has_trailing_newline = content.ends_with('\n');
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() + new_lines.len());
+    out.extend_from_slice(&lines[..at]);
+    out.extend_from_slice(&new_lines);
+    out.extend_from_slice(&lines[at..]);
+    let mut result = out.join("\n");
+    if has_trailing_newline && !result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
+/// Insert lines from `new_text` after line `at` (0-indexed) in `content`.
+///
+/// Same semantics as [`insert_lines_before`], but inserts after `at` instead
+/// of before. An empty `new_text` is a no-op.
+fn insert_lines_after(content: &str, at: usize, new_text: &str) -> String {
+    insert_lines_before(content, at + 1, new_text)
+}
 
 /// Replace lines from `start_line` to `end_line` (inclusive, 0-indexed) in
 /// `content` with `new_text`.
@@ -517,6 +616,170 @@ mod tests {
         assert!(result.is_error);
         assert!(result.content.contains("file has"));
         assert!(result.content.contains("File may have changed"));
+    }
+
+    // -----------------------------------------------------------------------
+    // insert_lines_before / insert_lines_after unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn insert_before_first_line() {
+        let content = "line1\nline2\n";
+        let result = insert_lines_before(content, 0, "header");
+        assert_eq!(result, "header\nline1\nline2\n");
+    }
+
+    #[test]
+    fn insert_before_middle() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_before(content, 1, "X\nY");
+        assert_eq!(result, "a\nX\nY\nb\nc\n");
+    }
+
+    #[test]
+    fn insert_after_last_line() {
+        let content = "a\nb\n";
+        let result = insert_lines_after(content, 1, "c\nd");
+        assert_eq!(result, "a\nb\nc\nd\n");
+    }
+
+    #[test]
+    fn insert_after_middle() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_after(content, 0, "X");
+        assert_eq!(result, "a\nX\nb\nc\n");
+    }
+
+    #[test]
+    fn insert_empty_text_is_noop() {
+        let content = "a\nb\nc\n";
+        assert_eq!(insert_lines_before(content, 1, ""), content);
+        assert_eq!(insert_lines_after(content, 1, ""), content);
+    }
+
+    #[test]
+    fn insert_no_trailing_newline_preserved() {
+        let content = "a\nb\nc";
+        let result = insert_lines_before(content, 1, "X");
+        assert_eq!(result, "a\nX\nb\nc");
+    }
+
+    // -----------------------------------------------------------------------
+    // EditFileTool insert_before / insert_after integration tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn insert_before_anchor() {
+        let dir = temp_dir("edit_insert_before");
+        let file = write_temp_file(&dir, "target.rs", "// header\nfn main() {\n}\n");
+        let ctx = test_context(dir.clone());
+
+        let anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        // anchors[0] = "// header", anchors[1] = "fn main()"
+        let (anchor_fn, _) = &anchors[1];
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "insert_before",
+                    "anchor": anchor_fn,
+                    "text": "// comment"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "expected success, got: {}",
+            result.content
+        );
+        assert!(result.content.contains("Inserted 1 line(s) before"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "// header\n// comment\nfn main() {\n}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_after_anchor() {
+        let dir = temp_dir("edit_insert_after");
+        let file = write_temp_file(&dir, "target.rs", "let x = 1;\nlet z = 3;\n");
+        let ctx = test_context(dir.clone());
+
+        let anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        let (anchor_x, _) = &anchors[0]; // "let x = 1;"
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "insert_after",
+                    "anchor": anchor_x,
+                    "text": "let y = 2;"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "expected success, got: {}",
+            result.content
+        );
+        assert!(result.content.contains("Inserted 1 line(s) after"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "let x = 1;\nlet y = 2;\nlet z = 3;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_before_anchor_cache_invalidated() {
+        let dir = temp_dir("edit_insert_cache");
+        let file = write_temp_file(&dir, "cache.rs", "original\n");
+        let ctx = test_context(dir.clone());
+
+        let anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        let (anchor, _) = &anchors[0];
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": file.to_str().unwrap(),
+                    "operation": "insert_before",
+                    "anchor": anchor,
+                    "text": "prefix"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error);
+
+        // Cache should be invalidated; anchors recomputed from new content.
+        let new_anchors = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file).unwrap()
+        };
+        assert_eq!(new_anchors.len(), 2);
+        assert_eq!(new_anchors[0].1, "prefix");
+        assert_eq!(new_anchors[1].1, "original");
     }
 
     #[tokio::test]
