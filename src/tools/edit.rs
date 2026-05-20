@@ -1,8 +1,9 @@
 //! edit_file tool — anchor-based file editing.
 //!
 //! Uses stable word anchors (from [`read_file`]) to target edit locations.
-//! This module implements the `replace` operation; `insert_before`,
-//! `insert_after`, and multi-file batching are implemented in subsequent PRs.
+//! This module implements the `replace` operation plus `insert_before` /
+//! `insert_after` pure helpers. Multi-file batching is implemented in
+//! subsequent PRs.
 
 use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
@@ -244,6 +245,50 @@ fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_tex
     result
 }
 
+/// Insert `text` as new lines before 0-indexed `line` in `content`.
+///
+/// Splits the file into lines, inserts the new lines at the given position,
+/// and rejoins. Trailing-newline status is preserved. Empty `text` is a no-op.
+#[allow(dead_code)] // Only called from tests.
+fn insert_lines_before(content: &str, line: usize, text: &str) -> String {
+    let has_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    let new_lines: Vec<&str> = text.lines().collect();
+
+    // Empty text is a no-op — inserting nothing does nothing.
+    if new_lines.is_empty() && text.is_empty() {
+        return content.to_string();
+    }
+
+    debug_assert!(
+        line <= lines.len(),
+        "insert_lines_before: line {} out of bounds ({} lines)",
+        line,
+        lines.len()
+    );
+    let line = line.min(lines.len());
+
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() + new_lines.len());
+    out.extend_from_slice(&lines[..line]);
+    out.extend_from_slice(&new_lines);
+    out.extend_from_slice(&lines[line..]);
+
+    let mut result = out.join("\n");
+    if has_trailing_newline && !result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
+/// Insert `text` as new lines after 0-indexed `line` in `content`.
+///
+/// Delegates to [`insert_lines_before`] at `line + 1`. Empty `text` is a
+/// no-op (delegated).
+#[allow(dead_code)] // Only called from tests.
+fn insert_lines_after(content: &str, line: usize, text: &str) -> String {
+    insert_lines_before(content, line.saturating_add(1), text)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -322,6 +367,52 @@ mod tests {
         let content = "before\nold\nafter\n";
         let result = replace_line_range(content, 1, 1, "one\ntwo\nthree");
         assert_eq!(result, "before\none\ntwo\nthree\nafter\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // insert_lines_before / insert_lines_after unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn insert_before_middle() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_before(content, 1, "X\nY");
+        assert_eq!(result, "a\nX\nY\nb\nc\n");
+    }
+
+    #[test]
+    fn insert_before_first_line() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_before(content, 0, "Z");
+        assert_eq!(result, "Z\na\nb\nc\n");
+    }
+
+    #[test]
+    fn insert_before_empty_text_is_noop() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_before(content, 1, "");
+        assert_eq!(result, "a\nb\nc\n");
+    }
+
+    #[test]
+    fn insert_after_middle() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_after(content, 1, "X\nY");
+        assert_eq!(result, "a\nb\nX\nY\nc\n");
+    }
+
+    #[test]
+    fn insert_after_last_line() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_after(content, 2, "d");
+        assert_eq!(result, "a\nb\nc\nd\n");
+    }
+
+    #[test]
+    fn insert_after_empty_text_is_noop() {
+        let content = "a\nb\nc\n";
+        let result = insert_lines_after(content, 0, "");
+        assert_eq!(result, "a\nb\nc\n");
     }
 
     // -----------------------------------------------------------------------
