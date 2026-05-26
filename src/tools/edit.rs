@@ -3,8 +3,8 @@
 //! Uses stable word anchors (from [`read_file`]) to target edit locations.
 //! Supports three operations: `replace` (the default), `insert_before`,
 //! and `insert_after`. Edits are batched per file via `check_overlaps`; edits
-//! within a file are applied in declaration order (bottom-to-top sorting is
-//! handled in a follow-up PR).
+//! within a file are applied bottom-to-top (sorted by `start` descending)
+//! to preserve line-index validity.
 
 use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 use serde_json::Value;
@@ -262,7 +262,7 @@ impl Tool for EditFileTool {
                 // catches file shrinkage, but content changes that preserve
                 // line count are not detected. This is inherent to the caching
                 // design and acceptable for this scope.
-                let edits: Vec<ResolvedEdit> = {
+                let mut edits: Vec<ResolvedEdit> = {
                     let mut anchor_state = match ctx.anchor_state.lock() {
                         Ok(guard) => guard,
                         Err(_) => {
@@ -408,9 +408,8 @@ impl Tool for EditFileTool {
                 // Sort descending by start: higher lines applied first so
                 // lower-line edits' positions remain valid after insertions
                 // or multi-line replacements above them.
-                let mut sorted: Vec<&ResolvedEdit> = edits.iter().collect();
-                sorted.sort_by_key(|e| std::cmp::Reverse(e.start));
-                for edit in &sorted {
+                edits.sort_by_key(|e| std::cmp::Reverse(e.start));
+                for edit in &edits {
                     new_content = match edit.operation {
                         EditOp::Replace => {
                             replace_line_range(&new_content, edit.start, edit.end, &edit.text)
@@ -573,6 +572,10 @@ fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_tex
 /// Adjacent inserts (e.g., insert_after at line 1 and insert_before at line 2)
 /// are NOT overlapping — their ranges `[1,1]` and `[2,2]` are disjoint.
 ///
+/// Two point-edit operations targeting the same line (e.g., insert_after +
+/// insert_before around line N) are NOT treated as overlapping — the
+/// `(InsertAfter, InsertBefore)` pair on the same line is a valid "wrap" pattern.
+///
 /// # Errors
 ///
 /// Returns `Err(ToolResult::error(...))` with a message describing the first
@@ -584,6 +587,18 @@ fn check_overlaps(edits: &[ResolvedEdit], path: &str) -> Result<(), ToolResult> 
             let b = &edits[j];
             // Two edits overlap if their line ranges intersect.
             if a.start <= b.end && b.start <= a.end {
+                // Exception: insert_after + insert_before at the same line is
+                // a valid "wrap" pattern (both are point ops at [N,N]).
+                let is_same_line_point_ops =
+                    a.end == a.start && b.end == b.start && a.start == b.start;
+                let is_wrap_pair = matches!(
+                    (a.operation, b.operation),
+                    (EditOp::InsertAfter, EditOp::InsertBefore)
+                        | (EditOp::InsertBefore, EditOp::InsertAfter)
+                );
+                if is_same_line_point_ops && is_wrap_pair {
+                    continue;
+                }
                 return Err(ToolResult::error(format!(
                     "Overlapping edit ranges in '{}': edit {} (lines {}-{}) \
                      overlaps with edit {} (lines {}-{})",
@@ -1546,6 +1561,27 @@ mod tests {
                 start: 2,
                 end: 2,
                 text: "b".into(),
+            },
+        ];
+        assert!(check_overlaps(&edits, "test.rs").is_ok());
+    }
+
+    #[test]
+    fn check_overlaps_same_line_wrap_ok() {
+        // insert_after(N) + insert_before(N) at the same line is a valid
+        // "wrap this line" pattern — not an overlap.
+        let edits = vec![
+            ResolvedEdit {
+                operation: EditOp::InsertAfter,
+                start: 3,
+                end: 3,
+                text: "after".into(),
+            },
+            ResolvedEdit {
+                operation: EditOp::InsertBefore,
+                start: 3,
+                end: 3,
+                text: "before".into(),
             },
         ];
         assert!(check_overlaps(&edits, "test.rs").is_ok());
