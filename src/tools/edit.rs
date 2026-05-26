@@ -212,6 +212,7 @@ impl Tool for EditFileTool {
                     };
 
                     let text = match edit_entry.get("text").and_then(Value::as_str) {
+                        // Replace allows empty text ("blank the line"); inserts require content.
                         Some(t) if !t.is_empty() || op == EditOp::Replace => t,
                         Some(_) => {
                             edit_error = Some(format!(
@@ -262,8 +263,16 @@ impl Tool for EditFileTool {
                 // line count are not detected. This is inherent to the caching
                 // design and acceptable for this scope.
                 let edits: Vec<ResolvedEdit> = {
-                    let mut anchor_state =
-                        ctx.anchor_state.lock().expect("anchor state lock poisoned");
+                    let mut anchor_state = match ctx.anchor_state.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            results.push(format!(
+                                "edit_file: anchor state lock poisoned for '{}'",
+                                path_str
+                            ));
+                            continue;
+                        }
+                    };
                     let anchors = match anchor_state.get_anchors(&resolved) {
                         Ok(a) => a,
                         Err(e) => {
@@ -393,10 +402,15 @@ impl Tool for EditFileTool {
                     continue;
                 }
 
-                // --- apply edits in declaration order ---
+                // --- apply edits bottom-to-top (preserves line indices) ---
                 let old_bytes = content.len();
                 let mut new_content = content;
-                for edit in &edits {
+                // Sort descending by start: higher lines applied first so
+                // lower-line edits' positions remain valid after insertions
+                // or multi-line replacements above them.
+                let mut sorted: Vec<&ResolvedEdit> = edits.iter().collect();
+                sorted.sort_by_key(|e| std::cmp::Reverse(e.start));
+                for edit in &sorted {
                     new_content = match edit.operation {
                         EditOp::Replace => {
                             replace_line_range(&new_content, edit.start, edit.end, &edit.text)
@@ -417,9 +431,15 @@ impl Tool for EditFileTool {
 
                         // Invalidate anchor cache.
                         {
-                            let mut anchor_state =
-                                ctx.anchor_state.lock().expect("anchor state lock poisoned");
-                            anchor_state.notify_edit(&resolved);
+                            match ctx.anchor_state.lock() {
+                                Ok(mut anchor_state) => {
+                                    anchor_state.notify_edit(&resolved);
+                                }
+                                Err(_) => {
+                                    // Cache invalidation failure is non-fatal;
+                                    // the file was already written successfully.
+                                }
+                            }
                         }
 
                         results.push(format!(
@@ -438,9 +458,7 @@ impl Tool for EditFileTool {
             }
 
             // --- assemble final result ---
-            if results.is_empty() {
-                Ok(ToolResult::error("edit_file: no files processed"))
-            } else if any_success {
+            if any_success {
                 Ok(ToolResult::ok(results.join("\n")))
             } else {
                 Ok(ToolResult::error(results.join("\n")))
@@ -1338,6 +1356,108 @@ mod tests {
             std::fs::read_to_string(&file_b).unwrap(),
             "pub fn b() { /* new */ }\n"
         );
+    }
+
+    #[tokio::test]
+    async fn multi_file_partial_success() {
+        let dir = temp_dir("edit_partial_success");
+        let file_ok = write_temp_file(&dir, "ok.rs", "fn ok() {}\n");
+        let ctx = test_context(dir.clone());
+
+        // Prime anchors for the valid file.
+        let anchors_ok = {
+            let mut state = ctx.anchor_state.lock().unwrap();
+            state.get_anchors(&file_ok).unwrap()
+        };
+        let (anchor, _) = &anchors_ok[0];
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "files": [
+                        {
+                            "path": file_ok.to_str().unwrap(),
+                            "edits": [
+                                {
+                                    "anchor": anchor,
+                                    "end_anchor": anchor,
+                                    "text": "fn ok() { /* updated */ }"
+                                }
+                            ]
+                        },
+                        {
+                            "path": "nonexistent.rs",
+                            "edits": [
+                                {
+                                    "anchor": "whatever",
+                                    "text": "nope"
+                                }
+                            ]
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Partial success: one file succeeded, one failed.
+        assert!(
+            !result.is_error,
+            "expected partial success (ok), got error: {}",
+            result.content
+        );
+        assert!(result.content.contains("Applied 1 edit(s)"));
+        assert!(result.content.contains("ok.rs"));
+        assert!(result.content.contains("edit_file:"));
+        assert!(result.content.contains("nonexistent.rs"));
+
+        assert_eq!(
+            std::fs::read_to_string(&file_ok).unwrap(),
+            "fn ok() { /* updated */ }\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_file_all_fail() {
+        let dir = temp_dir("edit_all_fail");
+        let ctx = test_context(dir);
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "files": [
+                        {
+                            "path": "nonexistent_a.rs",
+                            "edits": [
+                                {
+                                    "anchor": "any",
+                                    "text": "nope"
+                                }
+                            ]
+                        },
+                        {
+                            "path": "nonexistent_b.rs",
+                            "edits": [
+                                {
+                                    "anchor": "any",
+                                    "text": "nope"
+                                }
+                            ]
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // All files failed → ToolResult::error.
+        assert!(result.is_error, "expected error, got success");
+        assert!(result.content.contains("nonexistent_a.rs"));
+        assert!(result.content.contains("nonexistent_b.rs"));
     }
 
     // -----------------------------------------------------------------------
