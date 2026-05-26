@@ -72,7 +72,7 @@ Before executing any task, classify it into one of five tiers. **This determines
 | **IMPLEMENT** | `rust-coder` (flash) | Feature implementation following existing patterns, tool impls, module wiring |
 | **DENSE** | `rust-expert` (pro) | SSE parsing state machines, anchor resolution + byte-range splicing, AST traversal, token budget math, complex error handling, retry/backoff logic |
 | **DESIGN** | `rust-architect` (kimi-k2.6) | Module boundaries, trait design, API contracts, concurrency models. **Requires user approval first.** |
-| **REVIEW** | `rust-reviewer` (qwen3.6-plus) | DoD checklist verification, spec compliance, memory safety audit |
+| **REVIEW** | `rust-reviewer` + `rust-reviewer2` (parallel) | Checklist review + architectural review; delegate to both simultaneously |
 
 ### Classification Decision Tree
 
@@ -151,7 +151,7 @@ Always classify the task first using the decision tree above. Then route to the 
 | IMPLEMENT | `rust-coder` | Delegate — code generation with scout context |
 | DENSE | none (rust-expert) | Handle directly — state machines, parsing, error flow |
 | DESIGN | `rust-architect` | Escalate — only after user approval |
-| REVIEW | `rust-reviewer` | Delegate — DoD verification, spec compliance, safety audit |
+| REVIEW | `rust-reviewer` + `rust-reviewer2` | Delegate to both in parallel — checklist review + architectural review. See Parallel Review section. |
 
 ### Review Fix Router (MANDATORY — apply when receiving review feedback)
 
@@ -229,6 +229,20 @@ After **3 review rounds** on a single PR:
 - Offer: "3 review rounds completed. Remaining: [list]. Create follow-up issues or continue?"
 
 - Blocking findings (correctness, security, memory safety) are exceptions — always fix.
+
+### Parallel Review (MANDATORY for REVIEW tier)
+
+When a PR reaches the REVIEW stage, delegate to **both** reviewers simultaneously:
+
+1. **Delegate to `rust-reviewer`** — checklist-based review (serde annotations, missing derives, test coverage, error paths, tool output contracts)
+2. **Delegate to `rust-reviewer2`** — architectural review (spec/invariant compliance, cross-module consistency, security boundaries, async correctness)
+3. **Wait for both** to return findings
+4. **Merge and deduplicate** findings into a single report. Critical issues from either reviewer block the PR.
+5. **Route fixes** according to the Review Fix Router
+
+Do NOT run reviewers sequentially. The two reviews cover different concerns and run in parallel for speed.
+
+**Divergence protocol:** If the two reviewers flag contradictory issues (e.g., one says "extract to trait" and the other says "keep inline"), escalate to `rust-expert` to decide. The expert's ruling is final for that review cycle.
 
 ### Merge Gate
 
