@@ -35,6 +35,18 @@ impl EditOp {
     }
 }
 
+/// A fully-resolved edit operation ready for application.
+#[allow(dead_code)] // Used in upcoming multi-file batching PR.
+struct ResolvedEdit {
+    operation: EditOp,
+    /// 0-indexed line number.
+    start: usize,
+    /// 0-indexed line number. For inserts: `end == start`.
+    end: usize,
+    /// The replacement/insertion text.
+    text: String,
+}
+
 /// Tool for anchor-based file editing.
 ///
 /// Supports three operations: `replace` (default), `insert_before`, and
@@ -406,6 +418,43 @@ fn replace_line_range(content: &str, start_line: usize, end_line: usize, new_tex
         result.push('\n');
     }
     result
+}
+
+/// Check a list of edits for overlapping line ranges.
+///
+/// Two edits overlap if their line ranges intersect:
+/// `a.start <= b.end && b.start <= a.end`.
+///
+/// Adjacent inserts (e.g., insert_after at line 1 and insert_before at line 2)
+/// are NOT overlapping — their ranges `[1,1]` and `[2,2]` are disjoint.
+///
+/// # Errors
+///
+/// Returns `Err(ToolResult::error(...))` with a message describing the first
+/// overlap found, or `Ok(())` if no overlaps are detected.
+#[allow(dead_code)] // Used in upcoming multi-file batching PR.
+fn check_overlaps(edits: &[ResolvedEdit], path: &str) -> Result<(), ToolResult> {
+    for i in 0..edits.len() {
+        for j in (i + 1)..edits.len() {
+            let a = &edits[i];
+            let b = &edits[j];
+            // Two edits overlap if their line ranges intersect.
+            if a.start <= b.end && b.start <= a.end {
+                return Err(ToolResult::error(format!(
+                    "Overlapping edit ranges in '{}': edit {} (lines {}-{}) \
+                     overlaps with edit {} (lines {}-{})",
+                    path,
+                    i,
+                    a.start + 1,
+                    a.end + 1,
+                    j,
+                    b.start + 1,
+                    b.end + 1,
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,5 +1099,123 @@ mod tests {
         assert_eq!(new_anchors[0].1, "modified");
         // Anchor word for the same line may differ because content changed.
         assert_ne!(new_anchors[0].0, *original_anchor);
+    }
+
+    // -----------------------------------------------------------------------
+    // check_overlaps unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_overlaps_separate_ok() {
+        let edits = vec![
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 0,
+                end: 0,
+                text: "replacement".into(),
+            },
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 2,
+                end: 3,
+                text: "other".into(),
+            },
+        ];
+        assert!(check_overlaps(&edits, "test.rs").is_ok());
+    }
+
+    #[test]
+    fn check_overlaps_overlapping_replaces() {
+        let edits = vec![
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 1,
+                end: 4,
+                text: "a".into(),
+            },
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 3,
+                end: 5,
+                text: "b".into(),
+            },
+        ];
+        let err = check_overlaps(&edits, "test.rs").unwrap_err();
+        assert!(err.is_error);
+        assert!(err.content.contains("Overlapping edit ranges in 'test.rs'"));
+        assert!(err.content.contains("edit 0 (lines 2-5)"));
+        assert!(err.content.contains("edit 1 (lines 4-6)"));
+    }
+
+    #[test]
+    fn check_overlaps_replace_plus_insert_overlap() {
+        // Replace [1,3] and insert_before at line 3 (range [3,3]) overlap.
+        let edits = vec![
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 1,
+                end: 3,
+                text: "replacement".into(),
+            },
+            ResolvedEdit {
+                operation: EditOp::InsertBefore,
+                start: 3,
+                end: 3,
+                text: "inserted".into(),
+            },
+        ];
+        let err = check_overlaps(&edits, "test.rs").unwrap_err();
+        assert!(err.is_error);
+        assert!(err.content.contains("Overlapping edit ranges in 'test.rs'"));
+        assert!(err.content.contains("edit 0 (lines 2-4)"));
+        assert!(err.content.contains("edit 1 (lines 4-4)"));
+    }
+
+    #[test]
+    fn check_overlaps_adjacent_inserts_ok() {
+        // insert_after(1) [1,1] and insert_before(2) [2,2] are adjacent but
+        // disjoint — no overlap.
+        let edits = vec![
+            ResolvedEdit {
+                operation: EditOp::InsertAfter,
+                start: 1,
+                end: 1,
+                text: "a".into(),
+            },
+            ResolvedEdit {
+                operation: EditOp::InsertBefore,
+                start: 2,
+                end: 2,
+                text: "b".into(),
+            },
+        ];
+        assert!(check_overlaps(&edits, "test.rs").is_ok());
+    }
+
+    #[test]
+    fn check_overlaps_identical_range() {
+        // Two replaces targeting the same range — overlap.
+        let edits = vec![
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 2,
+                end: 5,
+                text: "first".into(),
+            },
+            ResolvedEdit {
+                operation: EditOp::Replace,
+                start: 2,
+                end: 5,
+                text: "second".into(),
+            },
+        ];
+        let err = check_overlaps(&edits, "test.rs").unwrap_err();
+        assert!(err.is_error);
+        assert!(err.content.contains("Overlapping edit ranges in 'test.rs'"));
+    }
+
+    #[test]
+    fn check_overlaps_empty_list_ok() {
+        assert!(check_overlaps(&[], "test.rs").is_ok());
     }
 }
