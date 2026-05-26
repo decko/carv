@@ -17,7 +17,7 @@ pub enum Language {
     Rust,
     /// Python (`.py`)
     Python,
-    /// TypeScript (`.ts`)
+    /// TypeScript (`.ts`, `.js`)
     TypeScript,
     /// TSX / React TypeScript (`.tsx`)
     Tsx,
@@ -46,9 +46,7 @@ pub fn language_grammar(lang: Language) -> tree_sitter::Language {
 
 /// Map a file path to its tree-sitter [`Language`].
 ///
-/// Returns `None` for unsupported or unrecognized extensions. The path
-/// must contain a file extension — bare extension strings like `"rs"`
-/// are not matched (use a full or relative path like `"file.rs"`).
+/// Returns `None` for unsupported or unrecognized extensions.
 ///
 /// # Examples
 ///
@@ -57,15 +55,16 @@ pub fn language_grammar(lang: Language) -> tree_sitter::Language {
 /// assert_eq!(language_for_path("src/main.rs"), Some(Language::Rust));
 /// assert_eq!(language_for_path("script.py"), Some(Language::Python));
 /// assert_eq!(language_for_path("index.ts"), Some(Language::TypeScript));
+/// assert_eq!(language_for_path("app.js"), Some(Language::TypeScript));
 /// assert_eq!(language_for_path("component.tsx"), Some(Language::Tsx));
 /// assert_eq!(language_for_path("Makefile"), None);
 /// ```
-pub fn language_for_path(path: &str) -> Option<Language> {
-    let ext = Path::new(path).extension()?.to_str()?;
+pub fn language_for_path(path: impl AsRef<Path>) -> Option<Language> {
+    let ext = path.as_ref().extension()?.to_str()?;
     match ext {
         "rs" => Some(Language::Rust),
         "py" => Some(Language::Python),
-        "ts" => Some(Language::TypeScript),
+        "ts" | "js" => Some(Language::TypeScript),
         "tsx" => Some(Language::Tsx),
         _ => None,
     }
@@ -85,6 +84,11 @@ mod tests {
     fn rust_extension() {
         assert_eq!(language_for_path("main.rs"), Some(Language::Rust));
         assert_eq!(language_for_path("src/lib.rs"), Some(Language::Rust));
+        // AsRef<Path> accepts PathBuf
+        assert_eq!(
+            language_for_path(std::path::PathBuf::from("mod.rs")),
+            Some(Language::Rust)
+        );
     }
 
     #[test]
@@ -96,6 +100,7 @@ mod tests {
     #[test]
     fn typescript_extension() {
         assert_eq!(language_for_path("index.ts"), Some(Language::TypeScript));
+        assert_eq!(language_for_path("lib/util.js"), Some(Language::TypeScript));
     }
 
     #[test]
