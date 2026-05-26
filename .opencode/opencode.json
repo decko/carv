@@ -8,11 +8,12 @@
     }
   },
   "agent": {
-    "rust-expert": { "model": "opencode-go/deepseek-v4-pro" },
-    "rust-coder": { "model": "opencode-go/deepseek-v4-flash" },
+    "rust-expert": { "model": "deepseek/deepseek-v4-pro" },
+    "rust-coder": { "model": "deepseek/deepseek-v4-flash" },
     "rust-reviewer": { "model": "opencode-go/qwen3.6-plus" },
-    "rust-tester": { "model": "opencode-go/qwen3.5-plus" },
-    "rust-scout": { "model": "opencode-go/qwen3.5-plus" },
-    "rust-architect": { "model": "opencode-go/kimi-k2.6" }
+    "rust-tester": { "model": "deepseek/deepseek-v4-flash" },
+    "rust-scout": { "model": "deepseek/deepseek-v4-flash" },
+    "rust-architect": { "model": "opencode-go/kimi-k2.6" },
+    "rust-reviewer2": { "model": "opencode-go/kimi-k2.6" }
   }
 }
