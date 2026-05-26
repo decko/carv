@@ -44,9 +44,11 @@ pub fn language_grammar(lang: Language) -> tree_sitter::Language {
 // File extension → language mapping
 // ---------------------------------------------------------------------------
 
-/// Map a file path (or extension) to its tree-sitter [`Language`].
+/// Map a file path to its tree-sitter [`Language`].
 ///
-/// Returns `None` for unsupported or unrecognized extensions.
+/// Returns `None` for unsupported or unrecognized extensions. The path
+/// must contain a file extension — bare extension strings like `"rs"`
+/// are not matched (use a full or relative path like `"file.rs"`).
 ///
 /// # Examples
 ///
@@ -54,6 +56,7 @@ pub fn language_grammar(lang: Language) -> tree_sitter::Language {
 /// # use carv::treesitter::{language_for_path, Language};
 /// assert_eq!(language_for_path("src/main.rs"), Some(Language::Rust));
 /// assert_eq!(language_for_path("script.py"), Some(Language::Python));
+/// assert_eq!(language_for_path("index.ts"), Some(Language::TypeScript));
 /// assert_eq!(language_for_path("component.tsx"), Some(Language::Tsx));
 /// assert_eq!(language_for_path("Makefile"), None);
 /// ```
