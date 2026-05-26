@@ -21,11 +21,14 @@ ignore = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 
-# Tree-sitter dependencies deferred until version compatibility resolved (issue #4).
-# tree-sitter = "0.24"
-# tree-sitter-rust = "0.24"
-# tree-sitter-python = "0.24"
-# tree-sitter-typescript = "0.24"
+# Tree-sitter — version compatibility resolved in issue #4.
+# Core vs. grammar version mismatch is expected: grammars compile their own
+# C code and expose `extern "C" fn tree_sitter_<name>() -> Language`. The
+# core crate loads these at runtime. Tested with these version pairs:
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
 
 [dev-dependencies]
 # Pre-commit hooks (user-hooks feature is mutually exclusive with other features,

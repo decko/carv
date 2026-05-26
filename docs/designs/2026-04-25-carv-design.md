@@ -271,7 +271,7 @@ The `hashing/state.rs` module maintains per-file anchor mappings for the duratio
 
 Native C bindings via `tree-sitter` crate (not WASM). Grammars compiled at build time via `cc` in `[build-dependencies]`.
 
-**Crates:** All pinned to the same major version to avoid ABI mismatch. Check actual latest compatible versions on crates.io before implementation — `tree-sitter-typescript` may lag behind the core crate.
+**Crates:** Grammar crates compile their own C source and expose `extern "C" fn tree_sitter_<name>() -> Language`. They do not depend on the `tree-sitter` Rust crate version — the core crate loads the compiled languages at runtime. Version mismatches between core and grammars are expected; the versions below are tested compatible. Check crates.io for updates before bumping any single crate.
 
 **Query files:** Embedded via `include_str!()`. Each language query captures:
 - `@definition.function`, `@definition.method`, `@definition.class`, `@definition.interface`
@@ -422,10 +422,10 @@ reqwest-eventsource = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
-tree-sitter = "0.24"
-tree-sitter-rust = "0.24"
-tree-sitter-python = "0.24"
-tree-sitter-typescript = "0.24"
+tree-sitter = "0.26"                # existing: 0.26.9
+tree-sitter-rust = "0.24"           # existing: 0.24.2
+tree-sitter-python = "0.25"         # existing: 0.25.0
+tree-sitter-typescript = "0.23"     # existing: 0.23.2
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -439,7 +439,7 @@ cc = "1"                         # compile tree-sitter C grammars
 
 **Removed:** `async-trait` (native async fn in traits since Rust 1.75), `eventsource-stream` (replaced by `reqwest-eventsource`).
 
-**Note:** Pin all `tree-sitter-*` grammar crates to the same major version as the `tree-sitter` core crate. Verify actual latest compatible versions on crates.io before implementation — grammar crates sometimes lag behind.
+**Note:** Grammar crate versions are independent of the `tree-sitter` core crate version. Each grammar compiles its own C code. The core crate loads the result at runtime. The versions above are the latest compatible set as of 2026-05-26. Check `cargo info` for each crate before bumping.
 
 ## Testing & Verification
 
