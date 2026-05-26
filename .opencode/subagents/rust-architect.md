@@ -2,7 +2,6 @@
 name: rust-architect
 description: "Rust architecture specialist for high-level design decisions. Used sparingly for module boundaries, trait design, and API contracts."
 mode: subagent
-type: general
 tools:
   read: true
   glob: true

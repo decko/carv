@@ -3,17 +3,56 @@
   "plugin": [],
   "lsp": {
     "rust": {
-      "command": ["rust-analyzer"],
-      "extensions": ["rs"]
+      "command": [
+        "rust-analyzer"
+      ],
+      "extensions": [
+        "rs"
+      ]
     }
   },
   "agent": {
-    "rust-expert": { "model": "deepseek/deepseek-v4-pro" },
-    "rust-coder": { "model": "deepseek/deepseek-v4-flash" },
-    "rust-reviewer": { "model": "opencode-go/qwen3.6-plus" },
-    "rust-tester": { "model": "deepseek/deepseek-v4-flash" },
-    "rust-scout": { "model": "deepseek/deepseek-v4-flash" },
-    "rust-architect": { "model": "opencode-go/kimi-k2.6" },
-    "rust-reviewer2": { "model": "opencode-go/kimi-k2.6" }
+    "rust-expert": {
+      "model": "deepseek/deepseek-v4-pro",
+      "permission": {
+        "lsp": "allow"
+      }
+    },
+    "rust-coder": {
+      "model": "deepseek/deepseek-v4-flash",
+      "permission": {
+        "lsp": "allow"
+      }
+    },
+    "rust-reviewer": {
+      "model": "opencode-go/qwen3.6-plus",
+      "permission": {
+        "lsp": "allow"
+      }
+    },
+    "rust-tester": {
+      "model": "deepseek/deepseek-v4-flash",
+      "permission": {
+        "lsp": "allow"
+      }
+    },
+    "rust-scout": {
+      "model": "deepseek/deepseek-v4-flash",
+      "permission": {
+        "lsp": "allow"
+      }
+    },
+    "rust-architect": {
+      "model": "opencode-go/kimi-k2.6",
+      "permission": {
+        "lsp": "allow"
+      }
+    },
+    "rust-reviewer2": {
+      "model": "opencode-go/kimi-k2.6",
+      "permission": {
+        "lsp": "allow"
+      }
+    }
   }
 }

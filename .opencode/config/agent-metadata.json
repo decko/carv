@@ -7,8 +7,18 @@
       "path": ".opencode/agents/rust-expert.md",
       "description": "Rust expert agent for systems programming, async Rust, and tooling (tree-sitter, LSP)",
       "triggers": {
-        "file_patterns": ["*.rs", "Cargo.toml"],
-        "keywords": ["rust", "cargo", "tokio", "tree-sitter", "lsp", "async"]
+        "file_patterns": [
+          "*.rs",
+          "Cargo.toml"
+        ],
+        "keywords": [
+          "rust",
+          "cargo",
+          "tokio",
+          "tree-sitter",
+          "lsp",
+          "async"
+        ]
       }
     }
   },
@@ -34,12 +44,10 @@
       "description": "Rust codebase exploration and context discovery"
     },
     "rust-architect": {
-      "type": "general",
       "path": ".opencode/subagents/rust-architect.md",
       "description": "Rust architecture specialist for high-level design decisions"
     },
     "rust-reviewer2": {
-      "type": "general",
       "path": ".opencode/subagents/rust-reviewer2.md",
       "description": "Second-opinion Rust reviewer focusing on architectural coherence, spec compliance, invariants, and cross-module consistency. Complements the checklist-based rust-reviewer."
     }
