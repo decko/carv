@@ -2,7 +2,6 @@
 name: rust-reviewer2
 description: "Second-opinion Rust reviewer focusing on architectural coherence, spec compliance, invariants, and cross-module consistency. Complements the checklist-based reviewer."
 mode: subagent
-type: general
 tools:
   read: true
   glob: true
