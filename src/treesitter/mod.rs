@@ -46,7 +46,9 @@ pub fn language_grammar(lang: Language) -> tree_sitter::Language {
 
 /// Map a file path to its tree-sitter [`Language`].
 ///
-/// Returns `None` for unsupported or unrecognized extensions.
+/// Extension matching is **case-insensitive** (`.rs`, `.RS`, `.Rs` all map
+/// to Rust).  File names that *start* with a dot (e.g. `.rs`, `.tsconfig`)
+/// have no extension per [`Path::extension`] semantics and return `None`.
 ///
 /// # Examples
 ///
@@ -61,9 +63,14 @@ pub fn language_grammar(lang: Language) -> tree_sitter::Language {
 /// ```
 pub fn language_for_path(path: impl AsRef<Path>) -> Option<Language> {
     let ext = path.as_ref().extension()?.to_str()?;
-    match ext {
+    // Case-insensitive matching — `.RS`, `.Rs`, `.rs` all map to Rust.
+    match ext.to_ascii_lowercase().as_str() {
         "rs" => Some(Language::Rust),
         "py" => Some(Language::Python),
+        // tree-sitter-typescript handles both TS and JS syntax. JS-only
+        // constructs (e.g. `with` statements) may parse with errors; a
+        // dedicated `tree-sitter-javascript` crate would be needed for
+        // fully-correct JS parsing (tracked in issue #4 for later).
         "ts" | "js" => Some(Language::TypeScript),
         "tsx" => Some(Language::Tsx),
         _ => None,
@@ -109,6 +116,13 @@ mod tests {
     }
 
     #[test]
+    fn case_insensitive_extension() {
+        assert_eq!(language_for_path("main.RS"), Some(Language::Rust));
+        assert_eq!(language_for_path("script.PY"), Some(Language::Python));
+        assert_eq!(language_for_path("index.Ts"), Some(Language::TypeScript));
+    }
+
+    #[test]
     fn unrecognized_extension() {
         assert_eq!(language_for_path("README.md"), None);
         assert_eq!(language_for_path("Makefile"), None);
@@ -124,18 +138,23 @@ mod tests {
 
     #[test]
     fn grammars_are_loadable() {
-        // All four grammars must be accepted by a tree-sitter Parser.
-        for (lang, variant) in [
-            (Language::Rust, "Rust"),
-            (Language::Python, "Python"),
-            (Language::TypeScript, "TypeScript"),
-            (Language::Tsx, "Tsx"),
+        // Verify each grammar loads into a Parser and parses a minimal snippet.
+        for (lang, variant, snippet) in [
+            (Language::Rust, "Rust", "fn f() {}"),
+            (Language::Python, "Python", "def f(): pass"),
+            (Language::TypeScript, "TypeScript", "function f() {}"),
+            (Language::Tsx, "Tsx", "const x = <div />;"),
         ] {
             let language = language_grammar(lang);
             let mut parser = tree_sitter::Parser::new();
             parser
                 .set_language(&language)
                 .unwrap_or_else(|_| panic!("{variant} grammar failed to load"));
+            let tree = parser.parse(snippet, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{variant} grammar has parse errors on trivial input"
+            );
         }
     }
 
