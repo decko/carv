@@ -11,7 +11,6 @@ use std::str;
 use serde_json::Value;
 use tree_sitter::StreamingIterator;
 
-use crate::hashing::anchors::word_for_line;
 use crate::tools::traits::{Tool, ToolContext, ToolFuture, ToolResult};
 use crate::treesitter::{language_for_path, language_grammar, Language};
 
@@ -99,16 +98,15 @@ fn collect_definition_lines(
 
 /// Format a list of definition lines with hash-anchored references.
 ///
-/// Each line is prefixed with `anchor│` where `anchor` is the word-based
-/// hash from [`word_for_line`]. Occurrence indices (`.1`, `.2`, …) for
-/// duplicate anchors are NOT applied — those would need the full file's
-/// anchor state to match `read_file` output. For skeleton output, plain
-/// word anchors are sufficient for the LLM to reference lines.
-fn format_with_anchors(lines: &[DefLine]) -> String {
+/// Uses [`AnchorState`] to get occurrence-indexed anchors for the full
+/// file, then returns only the definition rows. This guarantees anchors
+/// match `read_file` output (Invariant #3).
+fn format_skeleton_with_anchors(lines: &[DefLine], file_anchors: &[(String, String)]) -> String {
     let mut output = String::new();
     for def in lines {
-        let anchor = word_for_line(&def.line);
-        output.push_str(&format!("{anchor}│{}\n", def.line));
+        if let Some((anchor, _)) = file_anchors.get(def.row) {
+            output.push_str(&format!("{anchor}│{}\n", def.line));
+        }
     }
     output
 }
@@ -171,7 +169,14 @@ impl Tool for GetSkeletonTool {
             };
 
             // Parse the file.
-            let mut parser_cache = ctx.parser_cache.lock().expect("parser cache lock poisoned");
+            let mut parser_cache = match ctx.parser_cache.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    return Ok(ToolResult::error(
+                        "get_skeleton failed: parser cache lock poisoned",
+                    ));
+                }
+            };
             let tree = match parser_cache.parse_file(&resolved) {
                 Ok(t) => t,
                 Err(e) => {
@@ -204,7 +209,30 @@ impl Tool for GetSkeletonTool {
                 return Ok(ToolResult::ok("(no definitions found)"));
             }
 
-            Ok(ToolResult::ok(format_with_anchors(&defs)))
+            // Get full file anchors (with occurrence indices) so output
+            // matches read_file and works with edit_file.
+            let mut anchor_state = match ctx.anchor_state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Ok(ToolResult::error(
+                        "get_skeleton failed: anchor state lock poisoned",
+                    ));
+                }
+            };
+            let file_anchors = match anchor_state.get_anchors(&resolved) {
+                Ok(a) => a,
+                Err(e) => {
+                    return Ok(ToolResult::error(format!(
+                        "get_skeleton failed: cannot read anchors for '{}': {e}",
+                        resolved.display()
+                    )));
+                }
+            };
+
+            Ok(ToolResult::ok(format_skeleton_with_anchors(
+                &defs,
+                &file_anchors,
+            )))
         })
     }
 }
@@ -457,7 +485,14 @@ impl Tool for GetFunctionTool {
             };
 
             // Parse the file.
-            let mut parser_cache = ctx.parser_cache.lock().expect("parser cache lock poisoned");
+            let mut parser_cache = match ctx.parser_cache.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    return Ok(ToolResult::error(
+                        "get_function failed: parser cache lock poisoned",
+                    ));
+                }
+            };
             let tree = match parser_cache.parse_file(&resolved) {
                 Ok(t) => t,
                 Err(e) => {
@@ -527,11 +562,36 @@ impl Tool for GetFunctionTool {
                 return Ok(ToolResult::ok("(empty body)"));
             }
 
-            // Format body with anchors.
+            // Use AnchorState for occurrence-indexed anchors that match
+            // read_file output (Invariant #3). Index into the full file's
+            // anchor list by the body node's row range.
+            let mut anchor_state = match ctx.anchor_state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Ok(ToolResult::error(
+                        "get_function failed: anchor state lock poisoned",
+                    ));
+                }
+            };
+            let file_anchors = match anchor_state.get_anchors(&resolved) {
+                Ok(a) => a,
+                Err(e) => {
+                    return Ok(ToolResult::error(format!(
+                        "get_function failed: cannot read anchors for '{}': {e}",
+                        resolved.display()
+                    )));
+                }
+            };
+
+            let start_row = body_node.start_position().row;
+            let end_row = body_node.end_position().row;
+
             let mut output = String::new();
-            for line in body_str.lines() {
-                let anchor = word_for_line(line);
-                output.push_str(&format!("{anchor}│{line}\n"));
+            for row in start_row..=end_row {
+                if let Some((anchor, _)) = file_anchors.get(row) {
+                    let line = body_str.lines().nth(row - start_row).unwrap_or("");
+                    output.push_str(&format!("{anchor}│{line}\n"));
+                }
             }
 
             Ok(ToolResult::ok(output))
