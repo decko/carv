@@ -5,6 +5,7 @@
 
 use crate::hashing::state::AnchorState;
 use crate::tools::traits::ToolContext;
+use crate::treesitter::parser::ParserCache;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -37,5 +38,6 @@ pub(crate) fn test_context(workspace_root: PathBuf) -> ToolContext {
     ToolContext {
         workspace_root,
         anchor_state: Arc::new(Mutex::new(AnchorState::new())),
+        parser_cache: Arc::new(Mutex::new(ParserCache::new())),
     }
 }

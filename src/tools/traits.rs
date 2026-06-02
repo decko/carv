@@ -79,12 +79,18 @@ impl ToolResult {
 /// Context shared across all tool invocations.
 ///
 /// Carries project state accessible to every tool's `execute` method.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ToolContext {
     /// Absolute path to the project root directory.
     pub workspace_root: PathBuf,
     /// Shared anchor state for hash-anchored line referencing.
     pub anchor_state: Arc<Mutex<crate::hashing::state::AnchorState>>,
+    /// Shared tree-sitter parser cache for per-file AST caching.
+    ///
+    /// Added for G5 (get_skeleton / get_function).  Previous tools
+    /// (read_file, edit_file, etc.) do not use tree-sitter so this
+    /// field is unused by them.
+    pub parser_cache: Arc<Mutex<crate::treesitter::parser::ParserCache>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +173,7 @@ mod tests {
         ToolContext {
             workspace_root: PathBuf::from("/tmp/test"),
             anchor_state: Arc::new(Mutex::new(crate::hashing::state::AnchorState::new())),
+            parser_cache: Arc::new(Mutex::new(crate::treesitter::parser::ParserCache::new())),
         }
     }
 

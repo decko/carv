@@ -220,6 +220,7 @@ mod tests {
         ToolContext {
             workspace_root,
             anchor_state: Arc::new(Mutex::new(AnchorState::new())),
+            parser_cache: Arc::new(Mutex::new(crate::treesitter::parser::ParserCache::new())),
         }
     }
 

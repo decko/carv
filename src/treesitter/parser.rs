@@ -50,7 +50,18 @@ impl ParserCache {
             parser: tree_sitter::Parser::new(),
         }
     }
+}
 
+// --- Default impl ---------------------------------------------------------
+
+impl Default for ParserCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(dead_code)] // Methods used only from tests; external callers in G5-G6.
+impl ParserCache {
     /// Return the parsed tree for `path`, re-parsing if not cached.
     ///
     /// The file extension determines which grammar to use.  The path is

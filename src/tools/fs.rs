@@ -515,6 +515,7 @@ mod tests {
         let ctx = ToolContext {
             workspace_root: dir,
             anchor_state: anchor_state.clone(),
+            parser_cache: Arc::new(Mutex::new(crate::treesitter::parser::ParserCache::new())),
         };
 
         // Write via the tool — this should invalidate the cache.

@@ -232,6 +232,7 @@ mod tests {
         ToolContext {
             workspace_root: PathBuf::from("/tmp"),
             anchor_state: Arc::new(Mutex::new(AnchorState::new())),
+            parser_cache: Arc::new(Mutex::new(crate::treesitter::parser::ParserCache::new())),
         }
     }
 
