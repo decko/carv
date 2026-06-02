@@ -1,8 +1,9 @@
-//! Tree-sitter structural tools — [`GetSkeletonTool`], [`GetFunctionTool`].
+//! Tree-sitter structural tools — [`GetSkeletonTool`], [`GetFunctionTool`],
+//! [`ReplaceSymbolTool`].
 //!
 //! These tools use tree-sitter queries to extract definition outlines
-//! (`get_skeleton`) and function bodies (`get_function`) from source files,
-//! returning results with stable hash-anchored line references.
+//! (`get_skeleton`), function bodies (`get_function`), and perform AST-aware
+//! symbol replacement (`replace_symbol`) with byte-range splicing.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -749,6 +750,13 @@ impl Tool for ReplaceSymbolTool {
 
                 let resolved = resolve_path(path_str, &ctx.workspace_root);
 
+                // Validate that the path stays within the workspace root.
+                if let Err(msg) =
+                    crate::tools::check_path_in_workspace(&resolved, &ctx.workspace_root)
+                {
+                    return Ok(ToolResult::error(format!("replace_symbol failed: {msg}")));
+                }
+
                 let lang = match language_for_path(&resolved) {
                     Some(l) => l,
                     None => {
@@ -780,7 +788,7 @@ impl Tool for ReplaceSymbolTool {
                     }
                 };
 
-                let content = match read_file_bytes(&resolved) {
+                let content = match tokio::fs::read(&resolved).await {
                     Ok(c) => c,
                     Err(e) => {
                         return Ok(ToolResult::error(format!(
@@ -795,7 +803,7 @@ impl Tool for ReplaceSymbolTool {
                     let parts: Vec<&str> = symbol.split('.').collect();
                     if parts.len() != 2 {
                         return Ok(ToolResult::error(format!(
-                            "replace_symbol failed: dot-path must have 2 parts, got '{}'",
+                            "replace_symbol failed: dot-path must have exactly 2 parts, got '{}'",
                             symbol
                         )));
                     }
@@ -827,6 +835,35 @@ impl Tool for ReplaceSymbolTool {
                 });
             }
 
+            // Check for overlapping byte ranges on the same file before
+            // applying any edits. Overlaps cause phase-2 offset
+            // corruption because phase-1 byte ranges go stale.
+            {
+                let mut i = 0;
+                while i < edits.len() {
+                    let mut j = i + 1;
+                    while j < edits.len() {
+                        if edits[i].path == edits[j].path {
+                            let (a, b) = if edits[i].start <= edits[j].start {
+                                (&edits[i], &edits[j])
+                            } else {
+                                (&edits[j], &edits[i])
+                            };
+                            if a.end > b.start {
+                                return Ok(ToolResult::error(format!(
+                                    "replace_symbol failed: overlapping byte ranges on '{}' — symbols '{}' ({}..{}) and '{}' ({}..{})",
+                                    a.path.display(),
+                                    a.symbol, a.start, a.end,
+                                    b.symbol, b.start, b.end,
+                                )));
+                            }
+                        }
+                        j += 1;
+                    }
+                    i += 1;
+                }
+            }
+
             // Phase 2: apply edits bottom-to-top (by descending byte offset
             // within each file). Edits on different files don't interfere.
             // Sort by (path, start descending) so later offsets don't shift.
@@ -837,7 +874,7 @@ impl Tool for ReplaceSymbolTool {
             for edit in &edits {
                 // Read current file content (may have been modified by a
                 // prior edit on the same file).
-                let content = match read_file_bytes(&edit.path) {
+                let content = match tokio::fs::read(&edit.path).await {
                     Ok(c) => c,
                     Err(e) => {
                         results.push(format!(
@@ -871,7 +908,7 @@ impl Tool for ReplaceSymbolTool {
                 new_content.extend_from_slice(&content[edit.end..]);
 
                 // Write back.
-                if let Err(e) = std::fs::write(&edit.path, &new_content) {
+                if let Err(e) = tokio::fs::write(&edit.path, &new_content).await {
                     results.push(format!(
                         "replace_symbol failed for '{}' in {}: {e}",
                         edit.symbol,
@@ -881,14 +918,20 @@ impl Tool for ReplaceSymbolTool {
                 }
 
                 // Invalidate caches.
-                let _ = ctx
+                if let Err(_e) = ctx
                     .anchor_state
                     .lock()
-                    .map(|mut s| s.notify_edit(&edit.path));
-                let _ = ctx
+                    .map(|mut s| s.notify_edit(&edit.path))
+                {
+                    tracing::warn!(path = %edit.path.display(), "anchor state lock poisoned during replace_symbol invalidation");
+                }
+                if let Err(_e) = ctx
                     .parser_cache
                     .lock()
-                    .map(|mut pc| pc.invalidate(&edit.path));
+                    .map(|mut pc| pc.invalidate(&edit.path))
+                {
+                    tracing::warn!(path = %edit.path.display(), "parser cache lock poisoned during replace_symbol invalidation");
+                }
 
                 results.push(format!(
                     "Replaced '{}' in {} ({} → {} bytes)",
@@ -1471,5 +1514,81 @@ mod tests {
         assert!(lines[0].contains("fn new_a()"), "a was first line");
         assert!(lines[1].contains("fn b()"), "b was second line");
         assert!(lines[2].contains("fn new_c()"), "c was third line");
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_export_default_declaration() {
+        let dir = temp_dir("replace_ts_default");
+        let file = write_temp_file(&dir, "app.ts", "export default class Old { x = 1; }\n");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": file.to_str().unwrap(), "symbol": "Old", "new_code": "export default class New { y = 2; }"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "replace failed: {}", result.content);
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert!(!on_disk.contains("Old"), "should replace Old class");
+        assert!(on_disk.contains("New"), "should contain New class");
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_rejects_path_traversal() {
+        let dir = temp_dir("replace_traversal");
+        write_temp_file(&dir, "safe.rs", "fn safe() {}\n");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": "../../outside.rs", "symbol": "fake", "new_code": "fn real() {}"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "should reject traversal path");
+        assert!(
+            result.content.contains("path escapes workspace root"),
+            "error should mention workspace escape, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_overlapping_ranges_rejected() {
+        let dir = temp_dir("replace_overlap");
+        // fn a() { 1 }\nfn b() { 2 }\n
+        // Byte ranges: a=0..13, b=15..28. These don't overlap.
+        // But the 'files' is an array — a single tool call with two
+        // entries targeting overlapping ranges on the same file.
+        // The overlap is impossible with these two non-overlapping
+        // symbols, so we test the happy path first, then test
+        // rejection with a single-entry hash conflict won't trigger.
+        write_temp_file(&dir, "mod.rs", "mod foo { fn bar() {} }\n");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        // Both `foo` (mod) and `bar` (fn inside mod) — bar's byte range
+        // is a subset of foo's, so they overlap.
+        let result = tool
+            .execute(json!({"files": [
+                {"path": dir.join("mod.rs").to_str().unwrap(), "symbol": "bar", "new_code": "fn replaced_inner() {}"},
+                {"path": dir.join("mod.rs").to_str().unwrap(), "symbol": "foo", "new_code": "mod replaced_outer { fn inner() {} }"}
+            ]}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "should reject overlapping ranges");
+        assert!(
+            result.content.contains("overlapping byte ranges"),
+            "error should mention overlap, got: {}",
+            result.content
+        );
     }
 }
