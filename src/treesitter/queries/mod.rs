@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn rust_queries_capture_all_definition_types() {
         // Covers struct, enum, union, trait, impl, type, macro, module, const, static.
-        let content_str = "struct S {}\nenum E {}\nunion U {}\ntrait T {}\nimpl T for S {}\ntype A = u8;\nmod m {}\npub const C: u8 = 0;\npub static S2: u8 = 0;\nmacro_rules! M { () => {} }\n";
+        let content_str = "struct S {}\nenum E {}\nunion U {}\ntrait T {}\nimpl T for S {}\ntype A = u8;\nmod m {}\npub const C: u8 = 0;\npub static S2: u8 = 0;\nmacro_rules! M { () => {} }\nfn free_func() {}\n";
         let path = temp_file("query_all_rs.rs", content_str);
         let mut cache = ParserCache::new();
         let tree = cache.parse_file(&path).unwrap();
@@ -93,6 +93,7 @@ mod tests {
         let captures = collect_captures(Language::Rust, &tree, &content);
         let count = |name: &str| captures.iter().filter(|c| c.as_str() == name).count();
 
+        assert_eq!(count("definition.function"), 1, "free function");
         assert_eq!(count("definition.struct"), 1, "struct");
         assert_eq!(count("definition.enum"), 1, "enum");
         assert_eq!(count("definition.union"), 1, "union");
@@ -130,12 +131,21 @@ mod tests {
             .iter()
             .filter(|c| c.as_str() == "definition.class")
             .count();
+        let method_count = captures
+            .iter()
+            .filter(|c| c.as_str() == "definition.method")
+            .count();
         assert_eq!(
-            fn_count, 2,
-            "expected 2 function defs (foo + baz), got: {:?}",
+            fn_count, 1,
+            "expected 1 function def (foo only, baz is a method), got: {:?}",
             captures
         );
         assert_eq!(class_count, 1, "expected 1 class def, got: {:?}", captures);
+        assert_eq!(
+            method_count, 1,
+            "expected 1 method def (baz), got: {:?}",
+            captures
+        );
     }
 
     #[test]

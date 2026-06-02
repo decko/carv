@@ -36,20 +36,9 @@
       (function_expression)
     ]) @definition.function)
 
-; Exported declarations.
-(export_statement
-  declaration: [
-    (function_declaration
-      name: (identifier) @name.definition.function) @definition.function
-    (class_declaration
-      name: (type_identifier) @name.definition.class) @definition.class
-    (interface_declaration
-      name: (type_identifier) @name.definition.interface) @definition.interface
-    (lexical_declaration
-      (variable_declarator
-        name: (identifier) @name.definition.function
-        value: (arrow_function)) @definition.function)
-  ])
+; Note: `export_statement` wrappers are not repeated here — tree-sitter
+; already matches the inner declaration patterns through the wrapper.
+; This avoids double-capturing the same node.
 
 ; Type aliases.
 (type_alias_declaration

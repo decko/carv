@@ -8,8 +8,11 @@
 ; Definitions
 ; ---------------------------------------------------------------------------
 
-(function_item
-  name: (identifier) @name.definition.function) @definition.function
+; Free functions — scoped to source_file to avoid capturing methods
+; inside impl blocks (those are handled by the declaration_list pattern).
+(source_file
+  (function_item
+    name: (identifier) @name.definition.function) @definition.function)
 
 ; Method definitions (inside impl blocks).
 (declaration_list
@@ -32,9 +35,8 @@
 (trait_item
   name: (type_identifier) @name.definition.trait) @definition.trait
 
-; Impl blocks.
+; Impl blocks — captures the type being implemented.
 (impl_item
-  trait: (_)? @name.definition.impl
   type: (type_identifier) @name.definition.impl) @definition.impl
 
 ; Type aliases.

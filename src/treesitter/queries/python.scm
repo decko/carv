@@ -7,8 +7,11 @@
 ; Definitions
 ; ---------------------------------------------------------------------------
 
-(function_definition
-  name: (identifier) @name.definition.function) @definition.function
+; Module-level function definitions — scoped to avoid capturing methods
+; inside class bodies (those are handled by the class-body pattern below).
+(module
+  (function_definition
+    name: (identifier) @name.definition.function) @definition.function)
 
 (class_definition
   name: (identifier) @name.definition.class) @definition.class
