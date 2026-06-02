@@ -5,6 +5,7 @@
 //! extensions to [`Language`] variants and loads the corresponding grammar.
 
 pub(crate) mod parser;
+pub(crate) mod queries;
 
 use std::path::Path;
 
