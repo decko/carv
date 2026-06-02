@@ -168,22 +168,26 @@ impl Tool for GetSkeletonTool {
                 }
             };
 
-            // Parse the file.
-            let mut parser_cache = match ctx.parser_cache.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    return Ok(ToolResult::error(
-                        "get_skeleton failed: parser cache lock poisoned",
-                    ));
-                }
-            };
-            let tree = match parser_cache.parse_file(&resolved) {
-                Ok(t) => t,
-                Err(e) => {
-                    return Ok(ToolResult::error(format!(
-                        "get_skeleton failed: cannot parse '{}': {e}",
-                        resolved.display()
-                    )));
+            // Parse the file. Lock parser cache only for the parse; release
+            // immediately afterward so we don't hold the lock during anchor
+            // state operations and file I/O.
+            let tree = {
+                let mut parser_cache = match ctx.parser_cache.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        return Ok(ToolResult::error(
+                            "get_skeleton failed: parser cache lock poisoned",
+                        ));
+                    }
+                };
+                match parser_cache.parse_file(&resolved) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "get_skeleton failed: cannot parse '{}': {e}",
+                            resolved.display()
+                        )));
+                    }
                 }
             };
 
@@ -387,7 +391,7 @@ fn find_dotpath_symbol<'a>(
 
     let kinds = def_kinds(lang);
     let outer_name = parts[0];
-    let inner_name = parts[1]; // only 2-part dot-path supported for now
+    let inner_name = parts.get(1).copied().unwrap_or("");
 
     for i in 0..node.child_count() {
         let child = match node.child(i as u32) {
@@ -484,22 +488,26 @@ impl Tool for GetFunctionTool {
                 }
             };
 
-            // Parse the file.
-            let mut parser_cache = match ctx.parser_cache.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    return Ok(ToolResult::error(
-                        "get_function failed: parser cache lock poisoned",
-                    ));
-                }
-            };
-            let tree = match parser_cache.parse_file(&resolved) {
-                Ok(t) => t,
-                Err(e) => {
-                    return Ok(ToolResult::error(format!(
-                        "get_function failed: cannot parse '{}': {e}",
-                        resolved.display()
-                    )));
+            // Parse the file. Lock parser cache only for the parse; release
+            // immediately afterward so we don't hold the lock during anchor
+            // state operations and file I/O.
+            let tree = {
+                let mut parser_cache = match ctx.parser_cache.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        return Ok(ToolResult::error(
+                            "get_function failed: parser cache lock poisoned",
+                        ));
+                    }
+                };
+                match parser_cache.parse_file(&resolved) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "get_function failed: cannot parse '{}': {e}",
+                            resolved.display()
+                        )));
+                    }
                 }
             };
 

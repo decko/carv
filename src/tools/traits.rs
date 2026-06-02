@@ -79,7 +79,7 @@ impl ToolResult {
 /// Context shared across all tool invocations.
 ///
 /// Carries project state accessible to every tool's `execute` method.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolContext {
     /// Absolute path to the project root directory.
     pub workspace_root: PathBuf,
