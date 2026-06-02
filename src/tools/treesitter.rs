@@ -608,6 +608,303 @@ impl Tool for GetFunctionTool {
 }
 
 // ---------------------------------------------------------------------------
+// replace_symbol
+// ---------------------------------------------------------------------------
+
+/// Parent node kinds that wrap a definition and should be included when
+/// computing the byte range for replacement.
+///
+/// Example: a Python function decorated with `@decorator` is wrapped in a
+/// `decorated_definition` node. Replacing just the `function_definition`
+/// child would leave the orphaned decorator — we extend the range upward.
+const WRAPPER_KINDS: &[&str] = &[
+    // Python: @decorator wrapping a function or class
+    "decorated_definition",
+    // TypeScript: `export function ...`, `export default class ...`
+    "export_statement",
+    "export_default_declaration",
+];
+
+/// Extend the byte range of a definition node upward to include wrapper
+/// nodes (decorators, export statements) that should be part of the
+/// replacement.
+///
+/// Walks up from `node` through the parent chain; for each parent whose
+/// `kind()` is in [`WRAPPER_KINDS`], the range is widened to include it.
+fn extend_range_through_wrappers(mut node: tree_sitter::Node) -> tree_sitter::Node {
+    while let Some(parent) = node.parent() {
+        if WRAPPER_KINDS.contains(&parent.kind()) {
+            node = parent;
+        } else {
+            break;
+        }
+    }
+    node
+}
+
+/// Tool that replaces a named symbol (function, method, class) by AST node
+/// with byte-range splicing.
+///
+/// Supports multi-file batching via a `files` array. Edits are applied
+/// bottom-to-top to preserve byte offsets. Anchors and parser cache are
+/// invalidated after each file write.
+pub struct ReplaceSymbolTool;
+
+impl Tool for ReplaceSymbolTool {
+    fn name(&self) -> &str {
+        "replace_symbol"
+    }
+
+    fn description(&self) -> &str {
+        "Replace a function, method, or class definition by AST node in \
+         one or more source files. Supports simple names (e.g. 'old_fn') \
+         and dot-paths (e.g. 'MyStruct.old_method'). Accepts a `files` \
+         array for multi-file batching. Edits are applied bottom-to-top \
+         to preserve byte offsets. Decorators and export wrappers are \
+         included in the replaced range."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the source file"
+                            },
+                            "symbol": {
+                                "type": "string",
+                                "description": "Name of the symbol to replace. Use dot-notation for methods (e.g. 'Struct.old_method')"
+                            },
+                            "new_code": {
+                                "type": "string",
+                                "description": "New code to substitute at the symbol's byte range"
+                            }
+                        },
+                        "required": ["path", "symbol", "new_code"]
+                    },
+                    "description": "List of files and symbols to replace"
+                }
+            },
+            "required": ["files"]
+        })
+    }
+
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
+    fn execute<'a>(&'a self, input: Value, ctx: &'a ToolContext) -> ToolFuture<'a> {
+        Box::pin(async move {
+            let files = match input.get("files").and_then(Value::as_array) {
+                Some(arr) => arr,
+                None => return Ok(ToolResult::error("missing required 'files' parameter")),
+            };
+
+            if files.is_empty() {
+                return Ok(ToolResult::ok("(no files to process)"));
+            }
+
+            // Phase 1: resolve all edits. Each edit gets a (path, byte_range,
+            // new_code) tuple plus a natural sort key for bottom-to-top.
+            struct ResolvedEdit {
+                path: PathBuf,
+                start: usize, // byte offset in original file
+                end: usize,   // byte offset in original file
+                new_code: String,
+                symbol: String, // for error messages
+            }
+            let mut edits: Vec<ResolvedEdit> = Vec::new();
+
+            for file_entry in files {
+                let path_str = match file_entry.get("path").and_then(Value::as_str) {
+                    Some(p) => p,
+                    None => {
+                        return Ok(ToolResult::error("each file entry requires a 'path' field"));
+                    }
+                };
+                let symbol = match file_entry.get("symbol").and_then(Value::as_str) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return Ok(ToolResult::error(format!(
+                            "missing 'symbol' for file '{}'",
+                            path_str
+                        )));
+                    }
+                };
+                let new_code = match file_entry.get("new_code").and_then(Value::as_str) {
+                    Some(n) => n.to_string(),
+                    None => {
+                        return Ok(ToolResult::error(format!(
+                            "missing 'new_code' for file '{}'",
+                            path_str
+                        )));
+                    }
+                };
+
+                let resolved = resolve_path(path_str, &ctx.workspace_root);
+
+                let lang = match language_for_path(&resolved) {
+                    Some(l) => l,
+                    None => {
+                        return Ok(ToolResult::error(format!(
+                            "replace_symbol failed: unsupported extension for '{}'",
+                            resolved.display()
+                        )));
+                    }
+                };
+
+                // Parse the file (lock scope tight — drop after parse).
+                let tree = {
+                    let mut pc = match ctx.parser_cache.lock() {
+                        Ok(g) => g,
+                        Err(_) => {
+                            return Ok(ToolResult::error(
+                                "replace_symbol failed: parser cache lock poisoned",
+                            ));
+                        }
+                    };
+                    match pc.parse_file(&resolved) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            return Ok(ToolResult::error(format!(
+                                "replace_symbol failed: cannot parse '{}': {e}",
+                                resolved.display()
+                            )));
+                        }
+                    }
+                };
+
+                let content = match read_file_bytes(&resolved) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Ok(ToolResult::error(format!(
+                            "replace_symbol failed: cannot read '{}': {e}",
+                            resolved.display()
+                        )));
+                    }
+                };
+
+                // Find the symbol node.
+                let def_node = if symbol.contains('.') {
+                    let parts: Vec<&str> = symbol.split('.').collect();
+                    if parts.len() != 2 {
+                        return Ok(ToolResult::error(format!(
+                            "replace_symbol failed: dot-path must have 2 parts, got '{}'",
+                            symbol
+                        )));
+                    }
+                    find_dotpath_symbol(tree.root_node(), &parts, &content, lang)
+                } else {
+                    find_definition_by_name(tree.root_node(), &symbol, &content, lang)
+                };
+
+                let def_node = match def_node {
+                    Some(n) => n,
+                    None => {
+                        return Ok(ToolResult::error(format!(
+                            "replace_symbol failed: symbol '{}' not found in '{}'",
+                            symbol,
+                            resolved.display()
+                        )));
+                    }
+                };
+
+                // Extend range to include wrapper nodes.
+                let replacement_node = extend_range_through_wrappers(def_node);
+                let range = replacement_node.byte_range();
+                edits.push(ResolvedEdit {
+                    path: resolved,
+                    start: range.start,
+                    end: range.end,
+                    new_code,
+                    symbol,
+                });
+            }
+
+            // Phase 2: apply edits bottom-to-top (by descending byte offset
+            // within each file). Edits on different files don't interfere.
+            // Sort by (path, start descending) so later offsets don't shift.
+            edits.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| b.start.cmp(&a.start)));
+
+            let mut results: Vec<String> = Vec::new();
+
+            for edit in &edits {
+                // Read current file content (may have been modified by a
+                // prior edit on the same file).
+                let content = match read_file_bytes(&edit.path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        results.push(format!(
+                            "replace_symbol failed for '{}' in {}: {e}",
+                            edit.symbol,
+                            edit.path.display()
+                        ));
+                        continue;
+                    }
+                };
+
+                // Validate byte range against current content.
+                if edit.end > content.len() {
+                    results.push(format!(
+                        "replace_symbol failed for '{}' in {}: byte range {}..{} exceeds file length {}",
+                        edit.symbol,
+                        edit.path.display(),
+                        edit.start,
+                        edit.end,
+                        content.len()
+                    ));
+                    continue;
+                }
+
+                // Splice: keep everything before `start`, insert `new_code`,
+                // keep everything after `end`.
+                let mut new_content: Vec<u8> =
+                    Vec::with_capacity(content.len() + edit.new_code.len());
+                new_content.extend_from_slice(&content[..edit.start]);
+                new_content.extend_from_slice(edit.new_code.as_bytes());
+                new_content.extend_from_slice(&content[edit.end..]);
+
+                // Write back.
+                if let Err(e) = std::fs::write(&edit.path, &new_content) {
+                    results.push(format!(
+                        "replace_symbol failed for '{}' in {}: {e}",
+                        edit.symbol,
+                        edit.path.display()
+                    ));
+                    continue;
+                }
+
+                // Invalidate caches.
+                let _ = ctx
+                    .anchor_state
+                    .lock()
+                    .map(|mut s| s.notify_edit(&edit.path));
+                let _ = ctx
+                    .parser_cache
+                    .lock()
+                    .map(|mut pc| pc.invalidate(&edit.path));
+
+                results.push(format!(
+                    "Replaced '{}' in {} ({} → {} bytes)",
+                    edit.symbol,
+                    edit.path.display(),
+                    edit.end - edit.start,
+                    edit.new_code.len()
+                ));
+            }
+
+            Ok(ToolResult::ok(results.join("\n")))
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -968,5 +1265,211 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.content.contains("must have exactly 2 parts"));
+    }
+
+    // -----------------------------------------------------------------------
+    // replace_symbol tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn replace_symbol_function_rust() {
+        let dir = temp_dir("replace_rust");
+        let file = write_temp_file(&dir, "main.rs", "fn old_fn() -> u32 {\n    0\n}\n");
+        let path_str = file.to_str().unwrap();
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": path_str, "symbol": "old_fn", "new_code": "fn new_fn() -> u32 {\n    42\n}"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "replace failed: {}", result.content);
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            on_disk.contains("fn new_fn()"),
+            "file should contain replacement, got: {on_disk}"
+        );
+        assert!(
+            !on_disk.contains("old_fn"),
+            "file should not contain old symbol, got: {on_disk}"
+        );
+        assert!(on_disk.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_method_dotpath() {
+        let dir = temp_dir("replace_dotpath");
+        write_temp_file(
+            &dir,
+            "lib.rs",
+            "struct Foo;\nimpl Foo {\n    fn old(&self) -> u32 { 1 }\n}\n",
+        );
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": dir.join("lib.rs").to_str().unwrap(), "symbol": "Foo.old", "new_code": "fn new(&self) -> u32 { 99 }"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "replace failed: {}", result.content);
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_invalidates_cache() {
+        let dir = temp_dir("replace_cache");
+        let file = write_temp_file(&dir, "main.rs", "fn f() -> u32 { 1 }\nfn g() {}\n");
+        let ctx = ts_test_context(dir.clone());
+
+        // Populate parser cache by calling get_skeleton.
+        let skeleton_tool = GetSkeletonTool;
+        let _ = skeleton_tool
+            .execute(json!({"path": file.to_str().unwrap()}), &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(ctx.parser_cache.lock().unwrap().cache_size(), 1);
+
+        // Replace f().
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": file.to_str().unwrap(), "symbol": "f", "new_code": "fn replaced() {}"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error, "replace failed: {}", result.content);
+
+        // Cache should be cleared.
+        assert_eq!(ctx.parser_cache.lock().unwrap().cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_missing_symbol_errors() {
+        let dir = temp_dir("replace_notfound");
+        write_temp_file(&dir, "main.rs", "fn real() {}\n");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": dir.join("main.rs").to_str().unwrap(), "symbol": "nonexistent", "new_code": "fn fake() {}"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_empty_files() {
+        let dir = temp_dir("replace_empty_files");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool.execute(json!({"files": []}), &ctx).await.unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(result.content, "(no files to process)");
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_python_decorated_function() {
+        let dir = temp_dir("replace_py_decorated");
+        let file = write_temp_file(&dir, "mod.py", "@decorator\ndef old():\n    pass\n");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": file.to_str().unwrap(), "symbol": "old", "new_code": "def new():\n    return 0"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "replace failed: {}", result.content);
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        // The decorator should be gone too — the wrapper is included.
+        assert!(
+            !on_disk.contains("@decorator"),
+            "wrapper decorator should be replaced along with function, got: {on_disk}"
+        );
+        assert!(on_disk.contains("def new()"));
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_typescript_exported_function() {
+        let dir = temp_dir("replace_ts_export");
+        let file = write_temp_file(&dir, "app.ts", "export function old() { return 0; }\n");
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(
+                json!({"files": [{"path": file.to_str().unwrap(), "symbol": "old", "new_code": "export function new() { return 1; }"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "replace failed: {}", result.content);
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert!(!on_disk.contains("old()"));
+        assert!(on_disk.contains("new()"));
+    }
+
+    #[tokio::test]
+    async fn replace_symbol_multi_file_same_path() {
+        let dir = temp_dir("replace_multi");
+        let file = write_temp_file(
+            &dir,
+            "main.rs",
+            "fn a() { 1 }\nfn b() { 2 }\nfn c() { 3 }\n",
+        );
+        let ctx = ts_test_context(dir.clone());
+
+        let tool = ReplaceSymbolTool;
+        let result = tool
+            .execute(json!({"files": [
+                {"path": file.to_str().unwrap(), "symbol": "c", "new_code": "fn new_c() { 99 }"},
+                {"path": file.to_str().unwrap(), "symbol": "a", "new_code": "fn new_a() { 11 }"}
+            ]}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "multi-file replace failed: {}",
+            result.content
+        );
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            on_disk.contains("fn new_a() { 11 }"),
+            "a should be replaced, got: {on_disk}"
+        );
+        assert!(!on_disk.contains("fn a()"), "a should be gone");
+        assert!(on_disk.contains("fn b() { 2 }"), "b should be untouched");
+        assert!(
+            on_disk.contains("fn new_c() { 99 }"),
+            "c should be replaced"
+        );
+        assert!(!on_disk.contains("fn c()"), "c should be gone");
+        // Bottom-to-top ordering: c (higher offset) applied first, then a.
+        // Verify the result line order matches the original.
+        let lines: Vec<&str> = on_disk.lines().collect();
+        assert!(lines[0].contains("fn new_a()"), "a was first line");
+        assert!(lines[1].contains("fn b()"), "b was second line");
+        assert!(lines[2].contains("fn new_c()"), "c was third line");
     }
 }
