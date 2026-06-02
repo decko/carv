@@ -53,11 +53,11 @@
 
 ; Type aliases.
 (type_alias_declaration
-  name: (type_identifier) @name.definition.struct) @definition.struct
+  name: (type_identifier) @name.definition.type) @definition.type
 
 ; Enum declarations.
 (enum_declaration
-  name: (identifier) @name.definition.struct) @definition.struct
+  name: (identifier) @name.definition.enum) @definition.enum
 
 ; ---------------------------------------------------------------------------
 ; References

@@ -22,11 +22,11 @@
 
 ; Enum definitions.
 (enum_item
-  name: (type_identifier) @name.definition.struct) @definition.struct
+  name: (type_identifier) @name.definition.enum) @definition.enum
 
 ; Union definitions.
 (union_item
-  name: (type_identifier) @name.definition.struct) @definition.struct
+  name: (type_identifier) @name.definition.union) @definition.union
 
 ; Trait definitions.
 (trait_item
@@ -39,7 +39,7 @@
 
 ; Type aliases.
 (type_item
-  name: (type_identifier) @name.definition.struct) @definition.struct
+  name: (type_identifier) @name.definition.type) @definition.type
 
 ; Macro definitions.
 (macro_definition
@@ -69,7 +69,3 @@
 
 (macro_invocation
   macro: (identifier) @name.reference) @reference.call
-
-; Field access — struct field references.
-(field_expression
-  field: (field_identifier) @name.reference) @reference.call

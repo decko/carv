@@ -46,11 +46,11 @@
       attribute: (identifier) @name.reference)
   ]) @reference.call
 
-; Import statements.
+; Import statements — capture the imported name as a reference.
 (import_statement
   name: (dotted_name
-    (identifier) @name.reference)) @reference.call
+    (identifier) @name.reference))
 
 (import_from_statement
   module_name: (dotted_name
-    (identifier) @name.reference)) @reference.call
+    (identifier) @name.reference))
