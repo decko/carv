@@ -162,6 +162,11 @@ impl Tool for WriteFileTool {
                     let mut anchor_state =
                         ctx.anchor_state.lock().expect("anchor state lock poisoned");
                     anchor_state.notify_edit(&canonical);
+                    // Also invalidate the tree-sitter parser cache so
+                    // get_skeleton / get_function return fresh ASTs.
+                    if let Ok(mut pc) = ctx.parser_cache.lock() {
+                        pc.invalidate(&canonical);
+                    }
                     Ok(ToolResult::ok(format!(
                         "Wrote {byte_count} bytes to {}",
                         canonical.display()
@@ -515,6 +520,7 @@ mod tests {
         let ctx = ToolContext {
             workspace_root: dir,
             anchor_state: anchor_state.clone(),
+            parser_cache: Arc::new(Mutex::new(crate::treesitter::parser::ParserCache::new())),
         };
 
         // Write via the tool — this should invalidate the cache.

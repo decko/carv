@@ -439,6 +439,10 @@ impl Tool for EditFileTool {
                                     // the file was already written successfully.
                                 }
                             }
+                            // Also invalidate the tree-sitter parser cache.
+                            if let Ok(mut pc) = ctx.parser_cache.lock() {
+                                pc.invalidate(&resolved);
+                            }
                         }
 
                         results.push(format!(

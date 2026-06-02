@@ -12,6 +12,7 @@ pub mod search;
 #[cfg(test)]
 pub(crate) mod test_utils;
 pub mod traits;
+pub mod treesitter;
 
 pub use registry::ToolRegistry;
 pub use traits::{Tool, ToolContext, ToolFuture, ToolResult};
@@ -62,5 +63,7 @@ pub fn default_tools() -> Vec<Box<dyn Tool>> {
         Box::new(exec::ExecuteCommandTool),
         Box::new(fs::ReadFileTool),
         Box::new(search::SearchFilesTool),
+        Box::new(treesitter::GetSkeletonTool),
+        Box::new(treesitter::GetFunctionTool),
     ]
 }

@@ -14,8 +14,7 @@ use super::Language;
 ///
 /// The query captures definitions (`@definition.function`,
 /// `@definition.class`, etc.) and references (`@name.reference`).
-#[allow(dead_code)] // Used by G5/G6 tree-sitter tools.
-pub fn query_for_language(lang: Language) -> &'static str {
+pub(crate) fn query_for_language(lang: Language) -> &'static str {
     match lang {
         Language::Rust => include_str!("rust.scm"),
         Language::Python => include_str!("python.scm"),
@@ -33,7 +32,8 @@ mod tests {
     use crate::treesitter::language_grammar;
     use crate::treesitter::parser::ParserCache;
     use std::io::Write;
-    use tree_sitter::{Query, StreamingIterator};
+    use tree_sitter::Query;
+    use tree_sitter::StreamingIterator;
 
     fn temp_file(name: &str, content: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("carv-test-queries");
