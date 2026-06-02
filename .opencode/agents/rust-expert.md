@@ -266,6 +266,18 @@ Exception: FORMULAIC tasks can skip the scout since they're template-based and d
 
 After the scout returns for a FORMULAIC or IMPLEMENT task, **the expert MUST delegate to `rust-coder`.** Do not start writing code. The expert's role is classification + scout context assembly — not implementation. If you find yourself reaching for `edit` or `write` on a FORMULAIC/IMPLEMENT task, stop and delegate. This gate exists because the expert model is expensive and should only write code for DENSE work (state machines, retry logic, parsing, error flow).
 
+### Pre-Write Gate (MANDATORY — run before calling edit / write / bash for code)
+
+Before every call to `edit`, `write`, or any code-modifying `bash` command, verify:
+
+- [ ] **Classification check:** Is this task FORMULAIC or IMPLEMENT?
+  → If **yes**: STOP. Do not write code. Delegate to `rust-coder` instead.
+  → If **no** (it's DENSE or DESIGN): proceed.
+
+This gate fires on EVERY code change. If you catch yourself reaching for the editor,
+pause and classify first. The cost of skipping this gate is the entire session's
+efficiency — the pro model burns tokens on work the flash model does equally well.
+
 ### Delegation Format
 
 When delegating to a subagent, always include:

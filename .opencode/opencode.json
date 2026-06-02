@@ -15,7 +15,9 @@
     "rust-expert": {
       "model": "deepseek/deepseek-v4-pro",
       "permission": {
-        "lsp": "allow"
+        "lsp": "allow",
+        "edit": "ask",
+        "write": "ask"
       }
     },
     "rust-coder": {
