@@ -4,6 +4,8 @@
 //! via `tree_sitter_language::LanguageFn` constants. The module maps file
 //! extensions to [`Language`] variants and loads the corresponding grammar.
 
+pub mod parser;
+
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
