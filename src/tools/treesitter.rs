@@ -870,6 +870,7 @@ impl Tool for ReplaceSymbolTool {
             edits.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| b.start.cmp(&a.start)));
 
             let mut results: Vec<String> = Vec::new();
+            let mut had_error = false;
 
             for edit in &edits {
                 // Read current file content (may have been modified by a
@@ -882,6 +883,7 @@ impl Tool for ReplaceSymbolTool {
                             edit.symbol,
                             edit.path.display()
                         ));
+                        had_error = true;
                         continue;
                     }
                 };
@@ -896,6 +898,7 @@ impl Tool for ReplaceSymbolTool {
                         edit.end,
                         content.len()
                     ));
+                    had_error = true;
                     continue;
                 }
 
@@ -914,21 +917,24 @@ impl Tool for ReplaceSymbolTool {
                         edit.symbol,
                         edit.path.display()
                     ));
+                    had_error = true;
                     continue;
                 }
 
                 // Invalidate caches.
-                if let Err(_e) = ctx
+                if ctx
                     .anchor_state
                     .lock()
                     .map(|mut s| s.notify_edit(&edit.path))
+                    .is_err()
                 {
                     tracing::warn!(path = %edit.path.display(), "anchor state lock poisoned during replace_symbol invalidation");
                 }
-                if let Err(_e) = ctx
+                if ctx
                     .parser_cache
                     .lock()
                     .map(|mut pc| pc.invalidate(&edit.path))
+                    .is_err()
                 {
                     tracing::warn!(path = %edit.path.display(), "parser cache lock poisoned during replace_symbol invalidation");
                 }
@@ -942,7 +948,11 @@ impl Tool for ReplaceSymbolTool {
                 ));
             }
 
-            Ok(ToolResult::ok(results.join("\n")))
+            if had_error {
+                Ok(ToolResult::error(results.join("\n")))
+            } else {
+                Ok(ToolResult::ok(results.join("\n")))
+            }
         })
     }
 }
@@ -1460,7 +1470,7 @@ mod tests {
         let tool = ReplaceSymbolTool;
         let result = tool
             .execute(
-                json!({"files": [{"path": file.to_str().unwrap(), "symbol": "old", "new_code": "export function new() { return 1; }"}]}),
+                json!({"files": [{"path": file.to_str().unwrap(), "symbol": "old", "new_code": "export function updated() { return 1; }"}]}),
                 &ctx,
             )
             .await
@@ -1469,7 +1479,7 @@ mod tests {
         assert!(!result.is_error, "replace failed: {}", result.content);
         let on_disk = std::fs::read_to_string(&file).unwrap();
         assert!(!on_disk.contains("old()"));
-        assert!(on_disk.contains("new()"));
+        assert!(on_disk.contains("updated()"));
     }
 
     #[tokio::test]
