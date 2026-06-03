@@ -65,5 +65,6 @@ pub fn default_tools() -> Vec<Box<dyn Tool>> {
         Box::new(search::SearchFilesTool),
         Box::new(treesitter::GetSkeletonTool),
         Box::new(treesitter::GetFunctionTool),
+        Box::new(treesitter::ReplaceSymbolTool),
     ]
 }
