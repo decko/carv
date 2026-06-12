@@ -1,0 +1,46 @@
+# cargo-deny configuration for carv
+#
+# This is a permissive initial configuration. As the project matures,
+# tighten these policies (e.g., allow only specific licenses, ban
+# duplicate versions, block advisories).
+#
+# Reference: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Advisory-only mode: informational, not a hard gate.
+# Set db-urls if needed behind a corporate proxy.
+vulnerability = "deny"   # job fails (yellow) but continue-on-error keeps PR green
+unmaintained = "warn"    # lower signal, warn is fine here
+unsound      = "deny"
+notice = "warn"
+ignore = []
+
+# NOTE: Only [advisories] is checked in CI currently. The sections
+# below are placeholders for future tightening.
+# --- Sections below are not checked in CI (cargo deny check advisories only) ---
+
+[licenses]
+# Allow all licenses; warn on unknown/unrecognized ones.
+unlicensed = "warn"
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "ISC", "Unlicense", "MPL-2.0", "Zlib"]
+deny = []
+copyleft = "allow"
+default = "warn"
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+# Allow all crates. No bans.
+multiple-versions = "allow"
+wildcards = "allow"       # TODO: tighten once [bans] is activated in CI
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Allow crates from crates.io, git repos, and local paths.
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
