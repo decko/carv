@@ -9,9 +9,9 @@
 [advisories]
 # Advisory-only mode: informational, not a hard gate.
 # Set db-urls if needed behind a corporate proxy.
-vulnerability = "warn"
-unmaintained = "warn"
-unsound = "warn"
+vulnerability = "deny"   # job fails (yellow) but continue-on-error keeps PR green
+unmaintained = "warn"    # lower signal, warn is fine here
+unsound      = "deny"
 notice = "warn"
 ignore = []
 
@@ -32,7 +32,7 @@ exceptions = []
 [bans]
 # Allow all crates. No bans.
 multiple-versions = "allow"
-wildcards = "allow"
+wildcards = "allow"       # TODO: tighten once [bans] is activated in CI
 highlight = "all"
 deny = []
 skip = []
