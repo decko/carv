@@ -114,15 +114,12 @@ pub fn build_system_prompt(
                     .to_string(),
             );
 
-            // Sandboxed execution rules
-            parts.push(
-                "Command execution is resource-limited with the following rules: \
-                 - 30-second timeout \
-                 - 32 KB output cap \
-                 - No shell interpolation (arguments are passed as a list) \
-                 - Working directory is pinned to the workspace root"
-                    .to_string(),
-            );
+            // Resource-limited execution rules
+            parts.push("Command execution is resource-limited:".to_string());
+            parts.push("- 30-second timeout".to_string());
+            parts.push("- 32 KB output cap".to_string());
+            parts.push("- No shell interpolation (arguments are passed as a list)".to_string());
+            parts.push("- Working directory is pinned to the workspace root".to_string());
 
             parts.join("\n\n")
         }
@@ -139,15 +136,17 @@ pub fn build_system_prompt(
 pub fn detect_git_branch(workspace_root: &Path) -> String {
     let output = match std::process::Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(workspace_root)
         .output()
     {
         Ok(out) if out.status.success() => {
-            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if name == "HEAD" {
+                None
+            } else {
+                Some(name)
+            }
         }
         Ok(out) => {
             tracing::warn!(
@@ -338,12 +337,11 @@ mod tests {
     #[test]
     fn test_detect_git_branch_in_current_repo() {
         // This test runs inside the carv repo, so we expect a real branch name.
+        // In detached HEAD state (e.g. CI), git returns "HEAD" which the
+        // function converts to "unknown".
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let branch = detect_git_branch(repo_root);
-        assert_ne!(
-            branch, "unknown",
-            "should detect a real branch in the carv repo"
-        );
         assert!(!branch.is_empty(), "branch name should not be empty");
+        assert_ne!(branch, "HEAD", "should convert detached HEAD to 'unknown'");
     }
 }
