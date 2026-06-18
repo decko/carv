@@ -28,9 +28,13 @@ impl TokenBudget {
     ///
     /// # Panics
     ///
-    /// Panics if `context_window` is zero.
+    /// Panics if `context_window` is too small to produce a
+    /// meaningful threshold (i.e. the 80% limit would round to zero).
     pub fn new(context_window: usize) -> Self {
-        assert!(context_window > 0, "context_window must be > 0");
+        assert!(
+            (context_window as f64 * 0.8) as usize > 0,
+            "context_window {context_window} too small: 80% threshold rounds to zero"
+        );
         Self {
             context_window,
             threshold: 0.8,
@@ -74,16 +78,19 @@ impl TokenBudget {
         let tool_len = serde_json::to_string(tools)
             .map(|s| s.len())
             .unwrap_or(usize::MAX / 2);
-        (sys_len + msg_len + tool_len) / 4
+        (sys_len.saturating_add(msg_len).saturating_add(tool_len)) / 4
     }
 
     /// Whether the estimated payload or cumulative usage exceeds the
     /// threshold. Considers both the current payload estimate and the
     /// running total from `record_usage` calls.
+    ///
+    /// Uses `u64` arithmetic to avoid overflow on 32-bit targets where
+    /// `usize` is 32 bits but cumulative usage can exceed 4 billion.
     pub fn is_over_threshold(&self, estimated: usize) -> bool {
-        let limit = (self.context_window as f64 * self.threshold) as usize;
-        let cumulative = (self.total_input + self.total_output) as usize;
-        estimated >= limit || cumulative >= limit
+        let limit = (self.context_window as f64 * self.threshold) as u64;
+        let cumulative = self.total_input.saturating_add(self.total_output);
+        (estimated as u64) >= limit || cumulative >= limit
     }
 
     /// Context window size.
@@ -147,9 +154,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "context_window must be > 0")]
+    #[should_panic(expected = "too small")]
     fn test_new_panics_on_zero_window() {
         TokenBudget::new(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "too small")]
+    fn test_new_panics_on_still_zero_threshold() {
+        // context_window=1 → (1 * 0.8) as usize = 0, same problem
+        TokenBudget::new(1);
+    }
+
+    #[test]
+    fn test_new_minimum_viable_window() {
+        // context_window=2 → (2 * 0.8) as usize = 1, works
+        let budget = TokenBudget::new(2);
+        assert_eq!(budget.context_window(), 2);
     }
 
     #[test]
