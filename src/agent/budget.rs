@@ -1,22 +1,23 @@
-//! Token budget tracking and context window truncation.
+//! Token budget tracking and context window management.
 //!
-//! Tracks cumulative token usage across agent turns and truncates
-//! conversation history when approaching the model's context window
-//! (80% threshold by default).
+//! Tracks cumulative token usage across agent turns and provides
+//! threshold checks for the core loop. Truncation logic lives in
+//! the loop module (H3) — the budget only reports whether the
+//! threshold is exceeded.
 
-use crate::llm::types::LlmUsage;
+use crate::llm::types::{LlmUsage, Message, ToolDef};
 
 /// Token budget tracker for context window management.
 ///
 /// Before each LLM call, the agent estimates the message payload size
-/// and truncates old tool results if the threshold is exceeded. If
-/// truncating tool results isn't enough, the oldest conversation
-/// turns are dropped entirely.
+/// (system prompt + conversation history + tools) and checks whether
+/// the 80% context window threshold has been exceeded.
 pub struct TokenBudget {
     context_window: usize,
     threshold: f64,
     total_input: u64,
     total_output: u64,
+    total_cache_creation: u64,
 }
 
 impl TokenBudget {
@@ -29,24 +30,35 @@ impl TokenBudget {
             threshold: 0.8,
             total_input: 0,
             total_output: 0,
+            total_cache_creation: 0,
         }
     }
 
     /// Record token usage from a completed turn.
+    ///
+    /// `input_tokens` already includes cache read tokens in the
+    /// Anthropic wire format — do not double-count `cache_read_tokens`.
     pub fn record_usage(&mut self, usage: &LlmUsage) {
         self.total_input += usage.input_tokens as u64;
         self.total_output += usage.output_tokens as u64;
-        if let Some(cache) = usage.cache_read_tokens {
-            self.total_input += cache as u64;
+        if let Some(cache) = usage.cache_creation_tokens {
+            self.total_cache_creation += cache as u64;
         }
     }
 
-    /// Estimated token count for a messages array.
+    /// Estimate the token count of a message payload including tools.
     ///
     /// Uses a simple heuristic: ~4 characters per token for English text.
-    /// Not exact, but sufficient for the 80% threshold check.
-    pub fn estimate(&self, messages_json: &str) -> usize {
-        messages_json.len() / 4
+    /// Serializes messages and tools to JSON internally.
+    pub fn estimate_payload(&self, messages: &[Message], tools: &[ToolDef]) -> usize {
+        let mut len = 0;
+        if let Ok(json) = serde_json::to_string(messages) {
+            len += json.len();
+        }
+        if let Ok(json) = serde_json::to_string(tools) {
+            len += json.len();
+        }
+        len / 4
     }
 
     /// Whether the estimated payload exceeds the threshold.
@@ -65,7 +77,7 @@ impl TokenBudget {
         self.threshold
     }
 
-    /// Total input tokens across all turns.
+    /// Total input tokens across all turns (includes cache reads).
     pub fn total_input(&self) -> u64 {
         self.total_input
     }
@@ -73,6 +85,12 @@ impl TokenBudget {
     /// Total output tokens across all turns.
     pub fn total_output(&self) -> u64 {
         self.total_output
+    }
+
+    /// Total cache creation tokens across all turns (billing-only,
+    /// not context-window impacting).
+    pub fn total_cache_creation(&self) -> u64 {
+        self.total_cache_creation
     }
 }
 
@@ -89,6 +107,26 @@ mod tests {
         }
     }
 
+    fn make_msg(role: &str, text: &str) -> Message {
+        use crate::llm::types::{ContentBlock, Role};
+        Message {
+            role: if role == "system" {
+                Role::System
+            } else {
+                Role::User
+            },
+            content: vec![ContentBlock::text(text)],
+        }
+    }
+
+    fn make_tool(name: &str) -> ToolDef {
+        ToolDef {
+            name: name.into(),
+            description: "test tool".into(),
+            input_schema: serde_json::json!({}),
+        }
+    }
+
     #[test]
     fn test_new_budget_defaults() {
         let budget = TokenBudget::new(200_000);
@@ -96,6 +134,7 @@ mod tests {
         assert!((budget.threshold() - 0.8).abs() < f64::EPSILON);
         assert_eq!(budget.total_input(), 0);
         assert_eq!(budget.total_output(), 0);
+        assert_eq!(budget.total_cache_creation(), 0);
     }
 
     #[test]
@@ -108,41 +147,53 @@ mod tests {
     }
 
     #[test]
-    fn test_record_usage_with_cache_read() {
+    fn test_record_usage_cache_read_not_double_counted() {
+        // Anthropic's input_tokens already includes cache_read_tokens.
+        // The budget should NOT add cache_read_tokens separately.
         let mut budget = TokenBudget::new(100_000);
         let usage = LlmUsage {
-            input_tokens: 1000,
+            input_tokens: 1000, // total input including cache reads
             output_tokens: 500,
-            cache_read_tokens: Some(300),
+            cache_read_tokens: Some(300), // included in input_tokens above
             cache_creation_tokens: Some(100),
         };
         budget.record_usage(&usage);
-        // cache_read counts toward input
-        assert_eq!(budget.total_input(), 1300);
+        assert_eq!(budget.total_input(), 1000);
         assert_eq!(budget.total_output(), 500);
+        assert_eq!(budget.total_cache_creation(), 100);
     }
 
     #[test]
-    fn test_estimate_approximates_tokens() {
+    fn test_estimate_payload_with_messages_only() {
         let budget = TokenBudget::new(100_000);
-        let json = r#"{"messages":[{"role":"user","content":"hello world"}]}"#;
-        let tokens = budget.estimate(json);
-        // ~74 chars / 4 ≈ 18 tokens
-        assert!(tokens > 10, "estimated {tokens} should be > 10");
-        assert!(tokens < 30, "estimated {tokens} should be < 30");
+        let msgs = vec![make_msg("user", "hello world")];
+        let tokens = budget.estimate_payload(&msgs, &[]);
+        assert!(tokens > 5, "estimated {tokens} should be > 5");
+        assert!(tokens < 50, "estimated {tokens} should be < 50");
+    }
+
+    #[test]
+    fn test_estimate_payload_includes_tools() {
+        let budget = TokenBudget::new(100_000);
+        let msgs = vec![make_msg("user", "hello")];
+        let tools = vec![make_tool("read_file"), make_tool("write_file")];
+        let without_tools = budget.estimate_payload(&msgs, &[]);
+        let with_tools = budget.estimate_payload(&msgs, &tools);
+        assert!(
+            with_tools > without_tools,
+            "tools should increase estimate: {with_tools} vs {without_tools}"
+        );
     }
 
     #[test]
     fn test_is_over_threshold_below() {
         let budget = TokenBudget::new(100_000);
-        // 100k * 0.8 = 80k.  10k is well below.
         assert!(!budget.is_over_threshold(10_000));
     }
 
     #[test]
     fn test_is_over_threshold_at_boundary() {
         let budget = TokenBudget::new(100_000);
-        // 100k * 0.8 = 80k.  79_999 is below, 80_000 is at threshold.
         assert!(!budget.is_over_threshold(79_999));
         assert!(budget.is_over_threshold(80_000));
     }
@@ -154,31 +205,11 @@ mod tests {
     }
 
     #[test]
-    fn test_total_tokens_includes_cache() {
-        let mut budget = TokenBudget::new(200_000);
-        // 3 turns with cache hits
-        for _ in 0..3 {
-            let usage = LlmUsage {
-                input_tokens: 2000,
-                output_tokens: 1000,
-                cache_read_tokens: Some(1500),
-                cache_creation_tokens: None,
-            };
-            budget.record_usage(&usage);
-        }
-        // input = 3 * (2000 + 1500) = 10500
-        assert_eq!(budget.total_input(), 10500);
-        assert_eq!(budget.total_output(), 3000);
-    }
-
-    #[test]
     fn test_different_context_windows() {
         let small = TokenBudget::new(32_000);
         let large = TokenBudget::new(200_000);
-        // 32k * 0.8 = 25600
         assert!(!small.is_over_threshold(20_000));
         assert!(small.is_over_threshold(30_000));
-        // 200k * 0.8 = 160000
         assert!(!large.is_over_threshold(20_000));
         assert!(!large.is_over_threshold(100_000));
     }
