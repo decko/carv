@@ -1,8 +1,8 @@
 ---
 name: rust-reviewer
 description: "Rust code review specialist. Reviews code for memory safety, async correctness, error handling, spec compliance, and performance."
+model: kimi-k2.7
 mode: subagent
-type: general
 tools:
   read: true
   glob: true
