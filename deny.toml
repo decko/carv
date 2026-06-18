@@ -8,10 +8,10 @@
 
 [advisories]
 # Advisory-only mode: informational, not a hard gate.
-# Set db-urls if needed behind a corporate proxy.
-vulnerability = "deny"   # job fails (yellow) but continue-on-error keeps PR green
-unmaintained = "warn"    # lower signal, warn is fine here
-unsound      = "deny"
+# All severity levels set to "deny" — job turns yellow on advisories
+# but continue-on-error keeps the PR green.
+vulnerability = "deny"
+yanked = "deny"
 notice = "warn"
 ignore = []
 
