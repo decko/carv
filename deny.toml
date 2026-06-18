@@ -9,11 +9,11 @@
 [advisories]
 version = 2
 # Advisory-only mode: informational, not a hard gate.
-# All severity levels set to "deny" — job turns yellow on advisories
-# but continue-on-error keeps the PR green.
+# severity: "deny" turns the job yellow on advisories but
+# continue-on-error keeps the PR green.
 vulnerability = "deny"
-unmaintained = "deny"
-unsound = "deny"
+unmaintained = "all"
+unsound = "all"
 notice = "warn"
 ignore = []
 
