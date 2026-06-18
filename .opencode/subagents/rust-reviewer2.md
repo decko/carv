@@ -1,6 +1,7 @@
 ---
 name: rust-reviewer2
 description: "Second-opinion Rust reviewer focusing on architectural coherence, spec compliance, invariants, and cross-module consistency. Complements the checklist-based reviewer."
+model: qwen3.7-max
 mode: subagent
 tools:
   read: true
@@ -15,7 +16,7 @@ tools:
 
 ## Relationship to rust-reviewer
 
-`rust-reviewer` (qwen3.6-plus) handles the mechanical checklist: serde annotations, missing derives, test coverage, error paths, tool output contracts. **Do not duplicate its work.**
+`rust-reviewer` (kimi-k2.7) handles the mechanical checklist: serde annotations, missing derives, test coverage, error paths, tool output contracts. **Do not duplicate its work.**
 
 `rust-reviewer2` (you) handles higher-level concerns that require reasoning across modules and against the design spec. Focus on what a checklist can't catch.
 
