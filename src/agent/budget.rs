@@ -10,8 +10,9 @@ use crate::llm::types::{LlmUsage, Message, ToolDef};
 /// Token budget tracker for context window management.
 ///
 /// Before each LLM call, the agent estimates the message payload size
-/// (system prompt + conversation history + tools) and checks whether
-/// the 80% context window threshold has been exceeded.
+/// and checks whether the 80% context window threshold has been
+/// exceeded. Both the current payload estimate and cumulative usage
+/// via `record_usage` are considered.
 pub struct TokenBudget {
     context_window: usize,
     threshold: f64,
@@ -24,7 +25,12 @@ impl TokenBudget {
     /// Create a new budget with the given context window size.
     ///
     /// Defaults: 80% threshold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `context_window` is zero.
     pub fn new(context_window: usize) -> Self {
+        assert!(context_window > 0, "context_window must be > 0");
         Self {
             context_window,
             threshold: 0.8,
@@ -46,25 +52,38 @@ impl TokenBudget {
         }
     }
 
-    /// Estimate the token count of a message payload including tools.
+    /// Estimate the token count of the full LLM payload.
     ///
+    /// Covers system prompt, conversation history, and tool definitions.
     /// Uses a simple heuristic: ~4 characters per token for English text.
-    /// Serializes messages and tools to JSON internally.
-    pub fn estimate_payload(&self, messages: &[Message], tools: &[ToolDef]) -> usize {
-        let mut len = 0;
-        if let Ok(json) = serde_json::to_string(messages) {
-            len += json.len();
-        }
-        if let Ok(json) = serde_json::to_string(tools) {
-            len += json.len();
-        }
-        len / 4
+    /// Serializes components to JSON internally.
+    ///
+    /// On serialization failure, falls back to a conservative (large)
+    /// estimate so the budget errs toward overestimation rather than
+    /// silently undercounting.
+    pub fn estimate_payload(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[ToolDef],
+    ) -> usize {
+        let sys_len = system_prompt.len();
+        let msg_len = serde_json::to_string(messages)
+            .map(|s| s.len())
+            .unwrap_or(usize::MAX / 2);
+        let tool_len = serde_json::to_string(tools)
+            .map(|s| s.len())
+            .unwrap_or(usize::MAX / 2);
+        (sys_len + msg_len + tool_len) / 4
     }
 
-    /// Whether the estimated payload exceeds the threshold.
+    /// Whether the estimated payload or cumulative usage exceeds the
+    /// threshold. Considers both the current payload estimate and the
+    /// running total from `record_usage` calls.
     pub fn is_over_threshold(&self, estimated: usize) -> bool {
         let limit = (self.context_window as f64 * self.threshold) as usize;
-        estimated >= limit
+        let cumulative = (self.total_input + self.total_output) as usize;
+        estimated >= limit || cumulative >= limit
     }
 
     /// Context window size.
@@ -128,6 +147,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "context_window must be > 0")]
+    fn test_new_panics_on_zero_window() {
+        TokenBudget::new(0);
+    }
+
+    #[test]
     fn test_new_budget_defaults() {
         let budget = TokenBudget::new(200_000);
         assert_eq!(budget.context_window(), 200_000);
@@ -167,9 +192,21 @@ mod tests {
     fn test_estimate_payload_with_messages_only() {
         let budget = TokenBudget::new(100_000);
         let msgs = vec![make_msg("user", "hello world")];
-        let tokens = budget.estimate_payload(&msgs, &[]);
+        let tokens = budget.estimate_payload("", &msgs, &[]);
         assert!(tokens > 5, "estimated {tokens} should be > 5");
         assert!(tokens < 50, "estimated {tokens} should be < 50");
+    }
+
+    #[test]
+    fn test_estimate_payload_includes_system_prompt() {
+        let budget = TokenBudget::new(100_000);
+        let msgs = vec![make_msg("user", "hello")];
+        let without_sys = budget.estimate_payload("", &msgs, &[]);
+        let with_sys = budget.estimate_payload("You are a helpful agent.", &msgs, &[]);
+        assert!(
+            with_sys > without_sys,
+            "system prompt should increase estimate: {with_sys} vs {without_sys}"
+        );
     }
 
     #[test]
@@ -177,8 +214,8 @@ mod tests {
         let budget = TokenBudget::new(100_000);
         let msgs = vec![make_msg("user", "hello")];
         let tools = vec![make_tool("read_file"), make_tool("write_file")];
-        let without_tools = budget.estimate_payload(&msgs, &[]);
-        let with_tools = budget.estimate_payload(&msgs, &tools);
+        let without_tools = budget.estimate_payload("", &msgs, &[]);
+        let with_tools = budget.estimate_payload("", &msgs, &tools);
         assert!(
             with_tools > without_tools,
             "tools should increase estimate: {with_tools} vs {without_tools}"
@@ -202,6 +239,23 @@ mod tests {
     fn test_is_over_threshold_above() {
         let budget = TokenBudget::new(100_000);
         assert!(budget.is_over_threshold(90_000));
+    }
+
+    #[test]
+    fn test_is_over_threshold_from_cumulative_usage() {
+        let mut budget = TokenBudget::new(100_000);
+        // 80k limit. After recording 81k of usage, it should fire
+        // even with a zero estimate.
+        budget.record_usage(&make_usage(80_000, 1_000));
+        assert!(budget.is_over_threshold(0));
+    }
+
+    #[test]
+    fn test_is_over_threshold_cumulative_not_yet_reached() {
+        let mut budget = TokenBudget::new(100_000);
+        budget.record_usage(&make_usage(30_000, 10_000));
+        // 40k cumulative < 80k limit, 10k estimate < 80k limit
+        assert!(!budget.is_over_threshold(10_000));
     }
 
     #[test]
