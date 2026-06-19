@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ty` server, and `typescript-language-server` with lazy lifecycle and crash recovery
   (see [design doc](docs/designs/2026-04-25-carv-design.md#lsp-integration)).
 - LSP tools (`lsp_rename`, `lsp_references`, `lsp_definition`, `lsp_diagnostics`) in the tool registry.
-- GitHub Actions CI pipeline (build, test, clippy, fmt).
 
 ## [0.1.0] — 2026-06-19
 

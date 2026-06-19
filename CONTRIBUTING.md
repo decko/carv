@@ -105,7 +105,7 @@ git config --local commit.gpgsign   # must return "true"
 
 ### Pre-commit Hooks
 
-Client-side git hooks are managed by [cargo-husky](https://github.com/rhsyd/cargo-husky). Hooks are auto-installed into `.git/hooks/` on `cargo test` and run on every `git commit`:
+Client-side git hooks are managed by [cargo-husky](https://github.com/rhysd/cargo-husky). Hooks are auto-installed into `.git/hooks/` on `cargo test` and run on every `git commit`:
 
 | Hook | What it does |
 |---|---|
