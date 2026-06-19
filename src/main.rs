@@ -99,14 +99,24 @@ async fn main() -> anyhow::Result<()> {
     let formatter_verbose = if config.print { false } else { config.verbose };
     let mut output: Box<dyn StreamOutput> = create_formatter(output_format, formatter_verbose);
 
-    // Build request config (extended thinking enabled for Claude Sonnet)
+    // Build request config (extended thinking applies only to Anthropic)
     let request_config = RequestConfig {
         max_tokens: 8192,
         temperature: None,
         top_p: None,
         stop_sequences: vec![],
-        thinking: true,
-        thinking_budget: Some(1024),
+        thinking: matches!(config.provider, carv::cli::Provider::Anthropic),
+        thinking_budget: if matches!(config.provider, carv::cli::Provider::Anthropic) {
+            Some(1024)
+        } else {
+            None
+        },
+    };
+
+    // Provider-aware context window
+    let context_window = match config.provider {
+        carv::cli::Provider::Anthropic => 200_000, // Claude Sonnet
+        carv::cli::Provider::OpenAI => 128_000,    // GPT-4o
     };
 
     // Run agent loop
@@ -118,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         &user_prompt,
         &request_config,
         config.max_turns,
-        200_000, // 200k context window (Claude Sonnet)
+        context_window,
         output.as_mut(),
     )
     .await?;
