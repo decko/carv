@@ -21,6 +21,26 @@ Dirac demonstrated that AST-level tools — hash-anchored edits, tree-sitter str
 - Token budget tracking and context window management
 - Piped stdin support (`git diff | carv "review"`)
 
+## Implementation Status
+
+✅ = Implemented | 🚧 = In progress | 📋 = Planned
+
+| Feature | Status |
+|---------|--------|
+| CLI + config | ✅ |
+| Anthropic provider | ✅ |
+| OpenAI provider | ✅ |
+| Tool registry + traits | ✅ |
+| Basic tools (read/write/search/edit/exec) | ✅ |
+| Tree-sitter tools (skeleton/function/symbol) | ✅ |
+| Hash-anchored editing | ✅ |
+| Multi-file batching | ✅ |
+| Token budget tracking | ✅ |
+| System prompt construction | ✅ |
+| Agent loop | ✅ |
+| Streaming output (text/json/stream-json) | ✅ |
+| LSP integration | 📋 |
+
 ## Architecture
 
 ```
@@ -411,6 +431,49 @@ This prevents blowing the context window on long sessions with large tool output
 - **LSP server crash:** Attempt one restart. If restart fails, mark language's LSP tools as unavailable, continue with tree-sitter-only.
 - **Tree-sitter parse failure:** Fall back to raw read_file/write_file for that file
 - **No panics in the agent loop:** All errors are `Result<T>`
+
+## Recent Features
+
+Features implemented after the initial design that are not reflected in the architecture diagram above.
+
+### Layered Review System
+
+carv uses a two-reviewer model for PR quality:
+
+- **rust-expert** (minimax-m3) — first-pass reviewer. Handles the mechanical DoD checklist, serde wire format, tool contracts, and platform-gated tests.
+- **rust-reviewer** (kimi-k2.7-code) — second-pass reviewer. Performs deep structural review: architecture decisions, public API changes, security boundaries, and documentation accuracy.
+
+Both reviewers cover the full PR scope, but with different model strengths: minimax-m3 for fast exhaustive checks, kimi-k2.7-code for deeper reasoning.
+
+### Provider-Aware Defaults
+
+Default configuration values differ by provider to match each API's capabilities:
+
+| Parameter | Anthropic | OpenAI |
+|-----------|-----------|--------|
+| Context window | 200,000 tokens | 128,000 tokens |
+| Thinking support | Yes (`thinking` field) | No (reasoning via `reasoning_effort`) |
+| Prompt caching | Yes (`cache_control`) | No |
+
+The `RequestConfig` defaults are set at provider construction time based on the provider variant, not hardcoded at the caller site.
+
+### TTY Detection for Stdin
+
+carv uses `std::io::IsTerminal` to detect whether stdin is a TTY or a pipe:
+
+- **TTY (interactive terminal):** carv does NOT read stdin — it waits for a prompt argument or shows usage.
+- **Pipe (e.g., `git diff | carv "review"`):** carv reads stdin as context and appends it to the system prompt.
+
+This prevents carv from blocking indefinitely when run without an explicit prompt in an interactive terminal.
+
+### Conversation Compaction
+
+When the total message payload exceeds 80% of the model's context window, carv compacts the conversation:
+
+1. Drop all tool interaction turns except the 3 most recent ones.
+2. Replace dropped tool results with a single-line summary each.
+
+This preserves recent context while freeing space for new turns. The compaction threshold and kept-turn count are tuned for coding-agent workloads (where the most recent tool results are the most relevant).
 
 ## Dependencies
 

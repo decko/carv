@@ -1,5 +1,24 @@
 # AGENTS.md — Project Guide for AI Coding Agents
 
+## Table of Contents
+
+- [Build, Test, Lint](#build-test-lint)
+- [Pre-commit Hooks](#pre-commit-hooks)
+- [Architecture](#architecture)
+- [Critical Invariants](#critical-invariants)
+- [Git Workflow](#git-workflow-mandatory)
+- [Definition of Done (DoD) — Reviewer Gate](#definition-of-done-dod--reviewer-gate)
+- [Ticket Assignment](#ticket-assignment)
+- [Complete Workflow Summary](#complete-workflow-summary)
+- [Resuming After Interruption](#resuming-after-interruption)
+- [Memory](#memory)
+- [Code Style](#code-style)
+- [Testing Strategy](#testing-strategy)
+- [Review Depth Standards](#review-depth-standards)
+- [Review Feedback Workflow](#review-feedback-workflow)
+- [Dependencies to Know](#dependencies-to-know)
+- [When Editing This Project](#when-editing-this-project)
+
 ## Build, Test, Lint
 
 ```bash
@@ -379,6 +398,36 @@ Both reviewers must go beyond mechanical DoD checks. Each covers the full scope 
 - **Task lifecycle**: `tokio::spawn()` handles must be awaited or aborted on ALL code paths, including error/timeout.
 - **Timeout/kill/reap**: Timeout must `start_kill()` + `wait().await` — no zombie processes.
 - **No shell injection**: Commands via `Command::new(cmd).args(args)` — never `sh -c` with string interpolation.
+
+### For documentation PRs
+- **Accuracy:** Claims match codebase implementation.
+- **Completeness:** No missing sections or dead links.
+- **Clarity:** Understandable to new users and contributors.
+- **Formatting:** Valid markdown, working relative links.
+
+### High-signal pre-scan (run before full review)
+
+Run these three checks before deep-reviewing any diff:
+
+1. **Panic / unwrap scan:** Grep the diff for `.unwrap()`, `.expect()`, `.panic!()`, and bare index access (`[i]`, `[j]`, etc.) outside test code. Flag every hit — the agent loop must never panic.
+2. **Pure data file check:** Identify any new `.scm` query files, word lists, or fixture files. These are excluded from the PR line cap. Flag them separately in the DoD review if the total diff exceeds the cap.
+3. **Public API / security boundary scan:** Check if the diff modifies any public type/function signature, sandbox timeout, `Command` construction path, or LSP protocol contract. Any such change needs explicit justification in the PR body.
+
+## Review Feedback Workflow
+
+### How feedback is routed
+- **Mechanical findings** (formatting, unused imports, missing tests) → route back to the implementing agent (rust-coder) for a quick fix commit.
+- **Structural findings** (architecture, trait design, security, public API changes) → escalate to rust-expert for design-level decision.
+
+### Three-round limit
+Each review cycle has at most 3 rounds of feedback → fix. If the PR is not ready after 3 rounds, close it and create a follow-up issue for the remaining scope. This prevents review from becoming a blocking bottleneck.
+
+### Blocking vs. non-blocking
+- **Blocking:** Security issues, panics in agent path, incorrect wire format, uncapped multi-file output, missing test coverage for new code. Must be fixed before merge.
+- **Non-blocking:** Style preferences, suggested refactors, documentation improvements. May be deferred to a follow-up issue.
+
+### Batch review fixes
+Collect all fixable findings into a single commit per round. Do not fix findings one at a time with separate commits — batch them.
 
 ## Dependencies to Know
 
