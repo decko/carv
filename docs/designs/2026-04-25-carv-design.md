@@ -25,14 +25,17 @@ Dirac demonstrated that AST-level tools — hash-anchored edits, tree-sitter str
 
 ```
 src/
-├── main.rs               # CLI parsing (clap), entrypoint
-├── cli.rs                # Arg definitions, config loading
+├── main.rs
+├── lib.rs
+├── cli/
+│   └── mod.rs
 ├── llm/
 │   ├── mod.rs
 │   ├── provider.rs       # LlmProvider trait (native async, no async-trait)
 │   ├── types.rs          # Message, ToolDef, StreamEvent, RequestConfig, Usage
 │   ├── anthropic.rs      # Anthropic /v1/messages SSE client (with prompt caching)
-│   └── openai.rs         # OpenAI /v1/chat/completions SSE client
+│   ├── openai.rs         # OpenAI /v1/chat/completions SSE client
+│   └── retry.rs          # Retry logic with exponential backoff
 ├── tools/
 │   ├── mod.rs
 │   ├── registry.rs       # Tool registry, dispatch, deny-list filtering
@@ -40,14 +43,11 @@ src/
 │   ├── fs.rs             # read_file, write_file, list_files (.gitignore-aware)
 │   ├── edit.rs           # edit_file (hash-anchored, multi-file batched edits)
 │   ├── exec.rs           # execute_command (resource-limited: timeout, cwd, output cap)
+│   ├── search.rs         # search_files (.gitignore-aware, ripgrep-based)
 │   ├── treesitter.rs     # get_skeleton, get_function, replace_symbol
-│   ├── lsp.rs            # lsp_rename, lsp_references, lsp_definition, lsp_diagnostics
-│   └── search.rs         # search_files (.gitignore-aware, ripgrep-based)
+│   └── test_utils.rs     # Test helpers for tool testing
 ├── lsp/
-│   ├── mod.rs
-│   ├── client.rs         # Manage a single language server (tokio::process)
-│   ├── registry.rs       # Language detection, server config mapping
-│   └── transport.rs      # JSON-RPC over stdio (split stdin/stdout handles)
+│   └── mod.rs            # Stub — LSP not yet implemented
 ├── hashing/
 │   ├── mod.rs
 │   ├── anchors.rs        # Anchor generation (word-based hashes + occurrence index)
@@ -55,8 +55,8 @@ src/
 ├── treesitter/
 │   ├── mod.rs
 │   ├── parser.rs         # Parse files, run queries, cache invalidation
-│   ├── languages.rs      # Grammar loading (Rust, Python, TS)
 │   └── queries/          # .scm query files per language
+│       ├── mod.rs
 │       ├── rust.scm
 │       ├── python.scm
 │       └── typescript.scm
