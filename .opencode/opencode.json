@@ -27,7 +27,7 @@
       }
     },
     "rust-reviewer": {
-      "model": "opencode-go/qwen3.6-plus",
+      "model": "opencode-go/minimax-m3",
       "permission": {
         "lsp": "allow"
       }
@@ -51,7 +51,7 @@
       }
     },
     "rust-reviewer2": {
-      "model": "opencode-go/kimi-k2.6",
+      "model": "opencode-go/kimi-k2.7-code",
       "permission": {
         "lsp": "allow"
       }

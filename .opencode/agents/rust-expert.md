@@ -71,8 +71,8 @@ Before executing any task, classify it into one of five tiers. **This determines
 | **EXPLORE** | `rust-scout` (qwen3.5-plus) | File finding, pattern discovery, detecting project structure |
 | **IMPLEMENT** | `rust-coder` (flash) | Feature implementation following existing patterns, tool impls, module wiring |
 | **DENSE** | `rust-expert` (pro) | SSE parsing state machines, anchor resolution + byte-range splicing, AST traversal, token budget math, complex error handling, retry/backoff logic |
-| **DESIGN** | `rust-architect` (kimi-k2.6) | Module boundaries, trait design, API contracts, concurrency models. **Requires user approval first.** |
-| **REVIEW** | `rust-reviewer` + `rust-reviewer2` (parallel) | Checklist review + architectural review; delegate to both simultaneously |
+| **DESIGN** | `rust-architect` (kimi-k2.7-code) | Module boundaries, trait design, API contracts, concurrency models. **Requires user approval first.** |
+| **REVIEW** | `rust-reviewer` (minimax-m3) + `rust-reviewer2` (kimi-k2.7-code) (parallel) | Full review — duplex layers (same scope, different model lenses); delegate to both simultaneously |
 
 ### Classification Decision Tree
 
@@ -151,7 +151,7 @@ Always classify the task first using the decision tree above. Then route to the 
 | IMPLEMENT | `rust-coder` | Delegate — code generation with scout context |
 | DENSE | none (rust-expert) | Handle directly — state machines, parsing, error flow |
 | DESIGN | `rust-architect` | Escalate — only after user approval |
-| REVIEW | `rust-reviewer` + `rust-reviewer2` | Delegate to both in parallel — checklist review + architectural review. See Parallel Review section. |
+| REVIEW | `rust-reviewer` (minimax-m3) + `rust-reviewer2` (kimi-k2.7-code) | Delegate to both in parallel — full review, duplex layers (same scope, different model lenses). See Parallel Review section. |
 
 ### Review Fix Router (MANDATORY — apply when receiving review feedback)
 
@@ -232,15 +232,15 @@ After **3 review rounds** on a single PR:
 
 ### Parallel Review (MANDATORY for REVIEW tier)
 
-When a PR reaches the REVIEW stage, delegate to **both** reviewers simultaneously:
+When a PR reaches the REVIEW stage, delegate to **both** reviewers simultaneously for **layered review**:
 
-1. **Delegate to `rust-reviewer`** — checklist-based review (serde annotations, missing derives, test coverage, error paths, tool output contracts)
-2. **Delegate to `rust-reviewer2`** — architectural review (spec/invariant compliance, cross-module consistency, security boundaries, async correctness)
+1. **Delegate to `rust-reviewer` (minimax-m3)** — full-scope review (layer 1): mechanical checks, spec compliance, test coverage, error paths, tool output contracts, security boundaries
+2. **Delegate to `rust-reviewer2` (kimi-k2.7-code)** — full-scope review (layer 2): same surface as layer 1, but through a different model lens for complementary coverage
 3. **Wait for both** to return findings
 4. **Merge and deduplicate** findings into a single report. Critical issues from either reviewer block the PR.
 5. **Route fixes** according to the Review Fix Router
 
-Do NOT run reviewers sequentially. The two reviews cover different concerns and run in parallel for speed.
+Do NOT run reviewers sequentially. Both cover the full review scope in parallel for speed. Different model lenses catch different issues on the same surface — this is more robust than dividing responsibility by concern.
 
 **Divergence protocol:** If the two reviewers flag contradictory issues (e.g., one says "extract to trait" and the other says "keep inline"), escalate to `rust-expert` to decide. The expert's ruling is final for that review cycle.
 
@@ -301,12 +301,12 @@ task(
 
 ### rust-architect Escalation
 
-Before delegating to `rust-architect` (Kimi K2.6, expensive):
+Before delegating to `rust-architect` (Kimi K2.7-code, expensive):
 1. Assess if the task truly needs high-level design (module boundaries, trait design, API contracts)
 2. If yes, **ask the user for approval**:
    ```
    This task involves [specific design decision]. I recommend escalating to rust-architect
-   (Kimi K2.6) for high-level design. Approve? (yes/no)
+   (Kimi K2.7-code) for high-level design. Approve? (yes/no)
    ```
 3. Only delegate after user approval
 
