@@ -21,6 +21,26 @@ Dirac demonstrated that AST-level tools — hash-anchored edits, tree-sitter str
 - Token budget tracking and context window management
 - Piped stdin support (`git diff | carv "review"`)
 
+## Implementation Status
+
+✅ = Implemented | 🚧 = In progress | 📋 = Planned
+
+| Feature | Status |
+|---------|--------|
+| CLI + config | ✅ |
+| Anthropic provider | ✅ |
+| OpenAI provider | ✅ |
+| Tool registry + traits | ✅ |
+| Basic tools (read/write/search/edit/exec) | ✅ |
+| Tree-sitter tools (skeleton/function/symbol) | ✅ |
+| Hash-anchored editing | ✅ |
+| Multi-file batching | ✅ |
+| Token budget tracking | ✅ |
+| System prompt construction | ✅ |
+| Agent loop | ✅ |
+| Streaming output (text/json/stream-json) | ✅ |
+| LSP integration | 📋 |
+
 ## Architecture
 
 ```
@@ -411,6 +431,46 @@ This prevents blowing the context window on long sessions with large tool output
 - **LSP server crash:** Attempt one restart. If restart fails, mark language's LSP tools as unavailable, continue with tree-sitter-only.
 - **Tree-sitter parse failure:** Fall back to raw read_file/write_file for that file
 - **No panics in the agent loop:** All errors are `Result<T>`
+
+## Recent Features
+
+Features implemented after the initial design that are not reflected in the architecture diagram above.
+
+### Layered Review System
+
+carv uses a two-reviewer model for PR quality, configured in `.opencode/opencode.json`:
+
+- **rust-reviewer** (minimax-m3) — layer 1, full-scope review.
+- **rust-reviewer2** (kimi-k2.7-code) — layer 2, full-scope review.
+
+Both reviewers cover the complete PR scope (mechanical checks + architectural review). Different model lenses catch different issues on the same surface. Doc-only PRs use a single reviewer to save tokens.
+
+### Provider-Aware Defaults
+
+Default configuration values differ by provider to match each API's capabilities:
+
+| Parameter | Anthropic | OpenAI |
+|-----------|-----------|--------|
+| Context window | 200,000 tokens | 128,000 tokens |
+| Thinking support | Yes (`thinking` field) | No (reasoning via `reasoning_effort`) |
+| Prompt caching | Yes (`cache_control`) | No |
+
+The `RequestConfig` and context window are set in `main.rs` based on the provider variant (see `match config.provider`).
+
+### TTY Detection for Stdin
+
+When stdin is not piped (interactive terminal), carv detects this via `std::io::IsTerminal` and exits immediately with a prompt message rather than blocking.
+
+
+
+
+
+
+
+
+### Conversation Compaction
+
+When the total message payload exceeds 80% of the model's context window, carv compacts the conversation by dropping oldest tool interaction turns and keeping only the 3 most recent ones (system + user prompt are always preserved). Implemented in `src/agent/loop.rs`.
 
 ## Dependencies
 
