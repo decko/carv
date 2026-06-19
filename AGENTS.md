@@ -164,6 +164,7 @@ git cat-file -p HEAD | grep -A10 "BEGIN SSH SIGNATURE"
 
 1. **Agent verifies the checklist** — the implementing agent (rust-expert or rust-coder) runs `cargo build / test / clippy / fmt` and checks all DoD items
 2. **Both reviewers verify the agent's work** — delegate to `rust-reviewer` (minimax-m3, layer 1) and `rust-reviewer2` (kimi-k2.7-code, layer 2) for full-scope review. Both cover the complete DoD checklist and depth standards.
+   - **Exception:** doc-only PRs use single-reviewer routing — see `rust-expert` §Documentation Review
 3. **PR created directly** — after reviewer approval, create the PR immediately (no pre-PR user sign-off)
 
 Do NOT proceed to PR creation until the reviewer agent signs off.
