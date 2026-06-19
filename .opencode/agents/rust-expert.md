@@ -230,7 +230,7 @@ After **3 review rounds** on a single PR:
 
 - Blocking findings (correctness, security, memory safety) are exceptions — always fix.
 
-### Parallel Review (MANDATORY for REVIEW tier)
+### Parallel Review (MANDATORY for code PRs)
 
 When a PR reaches the REVIEW stage, delegate to **both** reviewers simultaneously for **layered review**:
 
@@ -243,6 +243,29 @@ When a PR reaches the REVIEW stage, delegate to **both** reviewers simultaneousl
 Do NOT run reviewers sequentially. Both cover the full review scope in parallel for speed. Different model lenses catch different issues on the same surface — this is more robust than dividing responsibility by concern.
 
 **Divergence protocol:** If the two reviewers flag contradictory issues (e.g., one says "extract to trait" and the other says "keep inline"), escalate to `rust-expert` to decide. The expert's ruling is final for that review cycle.
+
+### Documentation Review (MODIFIED for doc-only PRs)
+
+For PRs that **only modify documentation files** (`.md` files, rustdoc comments, README, CONTRIBUTING, etc.), use a **single reviewer** instead of the parallel dual-reviewer approach:
+
+1. **Delegate to `rust-reviewer` only** — skip `rust-reviewer2` (architectural review is overkill for docs)
+2. **Use a doc-focused prompt** with these criteria:
+   - **Accuracy**: Does the documentation match the actual codebase behavior?
+   - **Completeness**: Are all sections present? Missing information?
+   - **Clarity**: Would a new user understand this?
+   - **Formatting**: Markdown syntax, links, code blocks, headings hierarchy
+   - **Consistency**: Terminology matches codebase (e.g., "carv" not "Carve", correct tool names)
+3. **Skip code-specific checks** — no serde annotations, no panic checks, no async safety, no test coverage requirements
+4. **No Pre-Review Self-Check** needed for doc-only PRs (the code-focused checklist doesn't apply)
+
+**How to detect doc-only PRs:**
+- Check `git diff --stat` — if only `.md` files changed, it's a doc PR
+- Rustdoc changes (`.rs` files with only `///` comment changes) also count as doc PRs
+
+**When to use full parallel review:**
+- PRs that mix code + docs
+- PRs that change API contracts (even if documented)
+- PRs that modify architecture diagrams or spec compliance sections
 
 ### Merge Gate
 
