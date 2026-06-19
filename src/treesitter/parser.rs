@@ -101,7 +101,7 @@ impl ParserCache {
 
     /// Invalidate the cached tree for `path`.
     ///
-    /// The next call to [`parse_file`] will re-read and re-parse.
+    /// The next call to [`ParserCache::parse_file`] will re-read and re-parse.
     pub fn invalidate(&mut self, path: &Path) {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.cache.remove(&canonical);

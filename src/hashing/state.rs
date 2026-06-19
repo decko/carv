@@ -69,14 +69,14 @@ impl AnchorState {
     /// Invalidate the cached anchors for `path`.
     ///
     /// Call this after any write/edit tool modifies a file. The next
-    /// call to [`get_anchors`] will re-read the file from disk and
+    /// call to [`AnchorState::get_anchors`] will re-read the file from disk and
     /// recompute anchors.
     pub fn notify_edit(&mut self, path: &Path) {
         self.files.remove(path);
     }
 
     /// Remove a file from anchor tracking entirely (e.g., after
-    /// deletion). Same effect as [`notify_edit`] but semantically
+    /// deletion). Same effect as [`AnchorState::notify_edit`] but semantically
     /// clearer for file deletions.
     pub fn remove(&mut self, path: &Path) {
         self.files.remove(path);

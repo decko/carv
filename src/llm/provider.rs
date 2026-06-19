@@ -2,14 +2,14 @@
 //!
 //! Each provider (Anthropic, OpenAI) implements this trait to expose a
 //! unified streaming chat interface. The agent loop calls `stream_chat` and
-//! consumes [`LlmEvent`] items without knowing which backend is in use.
+//! consumes [`crate::llm::types::LlmEvent`] items without knowing which backend is in use.
 //!
 //! ## Design
 //! - Boxed-future return type (not RPITIT) keeps the trait **object-safe**,
 //!   so callers can hold `dyn LlmProvider` behind an `Arc`.  This is the same
 //!   pattern used by [`StreamOutput`](crate::stream::output::StreamOutput).
 //! - No `async-trait` crate — the boxed future is explicit.
-//! - The [`LlmStream`] and [`LlmStreamFuture`] aliases (from
+//! - The [`crate::llm::types::LlmStream`] and [`LlmStreamFuture`] aliases (from
 //!   [`crate::llm::types`]) keep the signature concise.
 //! - Errors are returned via `anyhow::Result` at both the stream and item levels.
 
@@ -19,7 +19,7 @@ use crate::llm::types::{LlmStreamFuture, Message, RequestConfig, ToolDef};
 ///
 /// Implementations handle the provider-specific wire protocol (SSE event
 /// parsing, authentication, request formatting) and emit a unified stream
-/// of [`LlmEvent`] items.
+/// of [`crate::llm::types::LlmEvent`] items.
 ///
 /// ## Object safety
 /// This trait is object-safe — you can use `Arc<dyn LlmProvider>` in the
@@ -29,7 +29,7 @@ pub trait LlmProvider: Send + Sync {
     /// Start a streaming chat completion.
     ///
     /// Returns a [`LlmStreamFuture`] — a pinned, boxed, sendable future that
-    /// resolves to a [`LlmStream`]. Each item in the stream is a single delta:
+    /// resolves to a [`crate::llm::types::LlmStream`]. Each item in the stream is a single delta:
     /// text tokens, thinking tokens, tool-use fragments, or terminal signals
     /// (`Done`, `Error`).
     fn stream_chat(

@@ -262,7 +262,7 @@ pub struct LlmUsage {
 
 /// Sendable, pinned stream of [`LlmEvent`] items.
 ///
-/// Used as the return type of [`LlmProvider::stream_chat`]. Wrapping in `Pin`
+/// Used as the return type of [`crate::llm::provider::LlmProvider::stream_chat`]. Wrapping in `Pin`
 /// is required for async iteration, and boxing erases the concrete type so the
 /// trait remains object-safe.
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmEvent>> + Send>>;
