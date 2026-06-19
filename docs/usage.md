@@ -111,13 +111,10 @@ carv -p -m claude-sonnet-4-20250514 --output-format json "hello"
 
 ```json
 {
-  "messages": [ ... ],
-  "usage": {
-    "input_tokens": 1200,
-    "output_tokens": 45,
-    "cache_read_tokens": 890
-  },
-  "turns": 1
+  "events": [
+    {"type": "text", "content": "Hello!"},
+    {"type": "done", "turns": 1, "usage": {"input_tokens": 1200, "output_tokens": 45, "cache_read_tokens": 890}}
+  ]
 }
 ```
 
@@ -161,12 +158,13 @@ carv -v -m claude-sonnet-4-20250514 "explain this"
 ```
 
 This shows:
-- Tool calls the model makes
-- Tool results (including tool names, parameters, read-only status)
-- Thinking blocks from the model
-- Internal agent loop decisions
-- Token usage per turn
-- Cache hit/miss information
+- Tool call names in the output (e.g. `[tool: read_file]`)
+- Debug-level tracing to stderr with agent internals (tool dispatch, token budget decisions, compaction)
+- A final summary with total turns and token usage
+
+Note: Extended thinking content is not shown in the output, and token
+usage is only reported as a final summary — not per turn. Cache hit/miss
+data is not currently emitted.
 
 Useful for understanding what the agent is doing, troubleshooting, or learning
 which tools are available.
@@ -178,7 +176,7 @@ By default, carv has full access to all tools. Restrict specific tools with
 
 ```bash
 # Disallow write/edit commands — read-only review only
-carv -m claude-sonnet-4-20250514 --disallowed-tools "write_file,edit_file,execute_command,replace_symbol" "review this project"
+carv -m claude-sonnet-4-20250514 --disallowed-tools "edit_file,execute_command,replace_symbol" "review this project"
 ```
 
 ```bash
@@ -191,9 +189,7 @@ carv -m claude-sonnet-4-20250514 --disallowed-tools "execute_command" "refactor 
 | Tool               | Read-only | Purpose                                         |
 |--------------------|-----------|-------------------------------------------------|
 | `read_file`        | Yes       | Read file with hash-anchored lines              |
-| `write_file`       | No        | Write/create file                               |
 | `edit_file`        | No        | Hash-anchored edits (replace/insert)            |
-| `list_files`       | Yes       | List directory contents (.gitignore-aware)      |
 | `search_files`     | Yes       | Content search via ripgrep                      |
 | `execute_command`  | No        | Run shell command (resource-limited)            |
 | `get_skeleton`     | Yes       | AST structural outline                          |
@@ -246,7 +242,7 @@ carv -p -m claude-sonnet-4-20250514 "review src/main.rs for potential issues"
 
 # Read-only review (no modifications allowed)
 carv -m claude-sonnet-4-20250514 \
-  --disallowed-tools "write_file,edit_file,execute_command,replace_symbol,lsp_rename" \
+  --disallowed-tools "edit_file,execute_command,replace_symbol,lsp_rename" \
   "review the src/ directory"
 ```
 
@@ -315,11 +311,11 @@ carv -m claude-sonnet-4-20250514 "add debug logging to the LSP shutdown path in 
 
 | Task                    | Recommended disallowed tools                     |
 |-------------------------|---------------------------------------------------|
-| Exploration / reading   | `write_file,edit_file,execute_command,replace_symbol` |
-| Code review             | `write_file,edit_file,execute_command,replace_symbol` |
+| Exploration / reading   | `edit_file,execute_command,replace_symbol`           |
+| Code review             | `edit_file,execute_command,replace_symbol`           |
 | Refactoring             | None (or `execute_command` if no build needed)    |
 | Debugging               | None                                              |
-| Learning / onboarding   | `write_file,edit_file,execute_command,replace_symbol,lsp_rename` |
+| Learning / onboarding   | `edit_file,execute_command,replace_symbol,lsp_rename`           |
 | Automated fixes         | `execute_command` (to prevent running modified code) |
 
 ### Output Format per Use Case
@@ -333,14 +329,3 @@ carv -m claude-sonnet-4-20250514 "add debug logging to the LSP shutdown path in 
 
 carv respects standard proxy environment variables (`HTTP_PROXY`,
 `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`) for API calls if they are set.
-
-### Exit Codes
-
-| Code | Meaning                |
-|------|------------------------|
-| 0    | Success                |
-| 1    | General error          |
-| 2    | CLI parsing error      |
-| 3    | API key missing        |
-| 4    | LLM API error          |
-| 5    | Tool execution error   |
