@@ -71,7 +71,7 @@ Before executing any task, classify it into one of five tiers. **This determines
 | **EXPLORE** | `rust-scout` (qwen3.5-plus) | File finding, pattern discovery, detecting project structure |
 | **IMPLEMENT** | `rust-coder` (flash) | Feature implementation following existing patterns, tool impls, module wiring |
 | **DENSE** | `rust-expert` (pro) | SSE parsing state machines, anchor resolution + byte-range splicing, AST traversal, token budget math, complex error handling, retry/backoff logic |
-| **DESIGN** | `rust-architect` (kimi-k2.6) | Module boundaries, trait design, API contracts, concurrency models. **Requires user approval first.** |
+| **DESIGN** | `rust-architect` (kimi-k2.7-code) | Module boundaries, trait design, API contracts, concurrency models. **Requires user approval first.** |
 | **REVIEW** | `rust-reviewer` + `rust-reviewer2` (parallel) | Checklist review + architectural review; delegate to both simultaneously |
 
 ### Classification Decision Tree
