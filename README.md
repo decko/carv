@@ -37,7 +37,7 @@ Anthropic (Claude) and OpenAI (GPT) as LLM backends.
 - **Resource-limited execution** — `execute_command` has a 30-second timeout,
   pinned working directory, 32KB output cap, and no shell interpolation (args
   passed as vector).
-- **LSP integration** — Lazily spawned language servers for Rust
+- **LSP integration** *(planned)* — Lazily spawned language servers for Rust
   (`rust-analyzer`), Python (`ty`), and TypeScript
   (`typescript-language-server`). Graceful shutdown, crash recovery with one
   restart attempt, and automatic re-opening of tracked files after restart.
@@ -51,7 +51,7 @@ Anthropic (Claude) and OpenAI (GPT) as LLM backends.
 - **API key** for at least one provider, set as an environment variable:
   - `ANTHROPIC_API_KEY` for Anthropic/Claude models
   - `OPENAI_API_KEY` for OpenAI/GPT models
-- **Optional — Language servers** for LSP features:
+- **Optional — Language servers** for planned LSP features:
   - `rust-analyzer` (Rust)
   - `ty server` (Python)
   - `typescript-language-server` (TypeScript)
@@ -173,7 +173,7 @@ carv is a single Rust binary (monolith). Key modules:
 | `agent`      | Core loop: prompt → LLM → tool → repeat, token budget tracking |
 | `hashing`    | Word-based stable anchors, duplicate-line disambiguation |
 | `treesitter` | AST parsing, query execution, parse tree caching |
-| `lsp`        | JSON-RPC over stdio, lazy lifecycle, crash recovery |
+| `lsp`        | JSON-RPC over stdio, lazy lifecycle, crash recovery *(planned)* |
 | `stream`     | Text, JSON, and JSON-lines output formatters |
 
 ### Tools
@@ -189,10 +189,10 @@ carv is a single Rust binary (monolith). Key modules:
 | `get_skeleton`      | ✓         | AST structural outline (hash-anchored) |
 | `get_function`      | ✓         | Extract function body by name |
 | `replace_symbol`    |           | Replace function/class by AST node, multi-file batching |
-| `lsp_rename`        |           | Semantic rename across the project |
-| `lsp_references`    | ✓         | Find all references to a symbol |
-| `lsp_definition`    | ✓         | Go to definition |
-| `lsp_diagnostics`   | ✓         | Current type errors and warnings |
+| `lsp_rename`        |           | Semantic rename across the project *(planned)* |
+| `lsp_references`    | ✓         | Find all references to a symbol *(planned)* |
+| `lsp_definition`    | ✓         | Go to definition *(planned)* |
+| `lsp_diagnostics`   | ✓         | Current type errors and warnings *(planned)* |
 
 ## Environment Variables
 
