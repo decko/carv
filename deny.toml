@@ -6,9 +6,9 @@
 # Reference: https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
+# v2 format — deprecated severity keys (vulnerability, notice, etc.)
+# are removed. Defaults: vulnerability=deny, notice=warn, etc.
 # Advisory-only mode: informational, not a hard gate.
-# Set to "deny" — job turns yellow on advisories but
-# continue-on-error keeps the PR green.
-vulnerability = "deny"
-notice = "warn"
+# continue-on-error in CI keeps the PR green on advisories.
+version = 2
 ignore = []
