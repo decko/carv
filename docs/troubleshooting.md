@@ -62,7 +62,7 @@ xcode-select --install
 apk add build-base
 ```
 
-Tree-sitter grammar crates compile C source at build time. The `cc` crate (listed in `[build-dependencies]`) handles cross-platform compilation, but a C compiler must be installed on the system.
+Tree-sitter grammar crates compile C source at build time. Tree-sitter grammar crates handle their own C compilation handles cross-platform compilation, but a C compiler must be installed on the system.
 
 ### Build fails with "the wasm target is not supported"
 
@@ -72,7 +72,7 @@ Some tree-sitter grammar versions expose a WASM feature. If you see:
 error[E0432]: unresolved import 'tree_sitter_rust::LANGUAGE'
 ```
 
-Make sure you're using the crate as a Rust library (not the WASM build target). Grammar crates from crates.io should work out of the box — this error typically indicates a version mismatch. See the [README](../README.md#tree-sitter-version-compatibility) for tested version pairs.
+Make sure you're using the crate as a Rust library (not the WASM build target). Grammar crates from crates.io should work out of the box — this error typically indicates a version mismatch. See the [README](../README.md) for tested version pairs.
 
 ### Cargo build fails with mysterious compile errors
 
