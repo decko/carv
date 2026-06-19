@@ -59,16 +59,25 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Extract text from the system message
-    let system_prompt_text = match &system_prompt_msg.content[0].content {
-        carv::llm::types::ContentType::Text { text } => text.clone(),
-        _ => "You are a coding agent.".to_string(),
+    let system_prompt_text = match system_prompt_msg.content.first() {
+        Some(block) => match &block.content {
+            carv::llm::types::ContentType::Text { text } => text.clone(),
+            _ => {
+                tracing::warn!("system prompt has unexpected content type, using fallback");
+                "You are a coding agent.".to_string()
+            }
+        },
+        None => {
+            tracing::warn!("system prompt has empty content, using fallback");
+            "You are a coding agent.".to_string()
+        }
     };
 
     // Create LLM provider
-    let model = config
-        .model
-        .as_deref()
-        .unwrap_or("claude-sonnet-4-20250514");
+    let model = config.model.as_deref().unwrap_or(match config.provider {
+        carv::cli::Provider::Anthropic => "claude-sonnet-4-20250514",
+        carv::cli::Provider::OpenAI => "gpt-4o",
+    });
     let provider: Box<dyn carv::llm::provider::LlmProvider> = match config.provider {
         carv::cli::Provider::Anthropic => Box::new(AnthropicProvider::new(
             config.api_key.clone(),
@@ -126,13 +135,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Read stdin if available (piped input). Returns an error if no data is provided.
+/// Read stdin if available (piped input). Returns an error if no prompt data is provided.
 fn read_stdin() -> anyhow::Result<String> {
-    use std::io::Read;
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        anyhow::bail!("No prompt provided. Pass a prompt as an argument or pipe one via stdin.");
+    }
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     if input.trim().is_empty() {
-        anyhow::bail!("No prompt provided. Pass a prompt as an argument or pipe one via stdin.");
+        anyhow::bail!("No prompt provided. Stdin was empty.");
     }
     Ok(input)
 }
