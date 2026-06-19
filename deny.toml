@@ -9,6 +9,8 @@
 # Advisory-only mode: informational, not a hard gate.
 # Set to "deny" — job turns yellow on advisories but
 # continue-on-error keeps the PR green.
+ignore = []
+
+[advisories.severity]
 vulnerability = "deny"
 notice = "warn"
-ignore = []
