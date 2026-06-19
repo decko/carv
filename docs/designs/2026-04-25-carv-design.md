@@ -438,12 +438,12 @@ Features implemented after the initial design that are not reflected in the arch
 
 ### Layered Review System
 
-carv uses a two-reviewer model for PR quality:
+carv uses a two-reviewer model for PR quality, configured in `.opencode/opencode.json`:
 
-- **rust-expert** (minimax-m3) — first-pass reviewer. Handles the mechanical DoD checklist, serde wire format, tool contracts, and platform-gated tests.
-- **rust-reviewer** (kimi-k2.7-code) — second-pass reviewer. Performs deep structural review: architecture decisions, public API changes, security boundaries, and documentation accuracy.
+- **rust-reviewer** (minimax-m3) — layer 1, full-scope review.
+- **rust-reviewer2** (kimi-k2.7-code) — layer 2, full-scope review.
 
-Both reviewers cover the full PR scope, but with different model strengths: minimax-m3 for fast exhaustive checks, kimi-k2.7-code for deeper reasoning.
+Both reviewers cover the complete PR scope (mechanical checks + architectural review). Different model lenses catch different issues on the same surface. Doc-only PRs use a single reviewer to save tokens.
 
 ### Provider-Aware Defaults
 
@@ -455,25 +455,22 @@ Default configuration values differ by provider to match each API's capabilities
 | Thinking support | Yes (`thinking` field) | No (reasoning via `reasoning_effort`) |
 | Prompt caching | Yes (`cache_control`) | No |
 
-The `RequestConfig` defaults are set at provider construction time based on the provider variant, not hardcoded at the caller site.
+The `RequestConfig` and context window are set in `main.rs` based on the provider variant (see `match config.provider`).
 
 ### TTY Detection for Stdin
 
-carv uses `std::io::IsTerminal` to detect whether stdin is a TTY or a pipe:
+When stdin is not piped (interactive terminal), carv detects this via `std::io::IsTerminal` and exits immediately with a prompt message rather than blocking.
 
-- **TTY (interactive terminal):** carv does NOT read stdin — it waits for a prompt argument or shows usage.
-- **Pipe (e.g., `git diff | carv "review"`):** carv reads stdin as context and appends it to the system prompt.
 
-This prevents carv from blocking indefinitely when run without an explicit prompt in an interactive terminal.
+
+
+
+
+
 
 ### Conversation Compaction
 
-When the total message payload exceeds 80% of the model's context window, carv compacts the conversation:
-
-1. Drop all tool interaction turns except the 3 most recent ones.
-2. Replace dropped tool results with a single-line summary each.
-
-This preserves recent context while freeing space for new turns. The compaction threshold and kept-turn count are tuned for coding-agent workloads (where the most recent tool results are the most relevant).
+When the total message payload exceeds 80% of the model's context window, carv compacts the conversation by dropping oldest tool interaction turns and keeping only the 3 most recent ones (system + user prompt are always preserved). Implemented in `src/agent/loop.rs`.
 
 ## Dependencies
 
