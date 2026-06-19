@@ -7,6 +7,9 @@
 pub(crate) mod parser;
 pub(crate) mod queries;
 
+/// Re-export for binary target access via public `carv::treesitter::` path.
+pub use parser::ParserCache;
+
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
