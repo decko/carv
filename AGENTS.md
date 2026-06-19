@@ -160,14 +160,14 @@ git cat-file -p HEAD | grep -A10 "BEGIN SSH SIGNATURE"
 
 ## Definition of Done (DoD) — Reviewer Gate
 
-**Two-step review before every PR:**
+**Two-layer review before every PR:**
 
 1. **Agent verifies the checklist** — the implementing agent (rust-expert or rust-coder) runs `cargo build / test / clippy / fmt` and checks all DoD items
 2. **Both reviewers verify the agent's work** — delegate to `rust-reviewer` (minimax-m3, layer 1) and `rust-reviewer2` (kimi-k2.7-code, layer 2) for full-scope review. Both cover the complete DoD checklist and depth standards.
    - **Exception:** doc-only PRs use single-reviewer routing — see `rust-expert` §Documentation Review
 3. **PR created directly** — after reviewer approval, create the PR immediately (no pre-PR user sign-off)
 
-Do NOT proceed to PR creation until the reviewer agent signs off.
+Do NOT proceed to PR creation until both reviewers sign off.
 
 DoD checklist:
 
@@ -194,7 +194,7 @@ DoD checklist:
 DoD checklist: [all items checked by agent, ready for reviewer verification]
 ```
 
-**The reviewer responds with:**
+**Each reviewer responds with:**
 - ✅ **Approved** — proceed to PR creation, OR
 - ❌ **Changes needed** — list of failing items, agent fixes and resubmits
 
@@ -226,8 +226,8 @@ Then assign it before writing any code.
 3. Verify SSH signing is active (git config --local commit.gpgsign)
 4. Implement the changes inside the worktree
 5. Run cargo build / test / clippy / fmt
-6. Request reviewer agent to verify DoD
-7. Reviewer approves → create PR from the worktree branch
+6. Request reviewers to verify DoD
+7. Both reviewers approve → create PR from the worktree branch
 8. After merge → clean up worktree and branch
 ```
 
@@ -379,8 +379,6 @@ Both reviewers must go beyond mechanical DoD checks. Each covers the full scope 
 - **Task lifecycle**: `tokio::spawn()` handles must be awaited or aborted on ALL code paths, including error/timeout.
 - **Timeout/kill/reap**: Timeout must `start_kill()` + `wait().await` — no zombie processes.
 - **No shell injection**: Commands via `Command::new(cmd).args(args)` — never `sh -c` with string interpolation.
-
-### High-signal pre-scan (run before full review)
 
 ## Dependencies to Know
 
