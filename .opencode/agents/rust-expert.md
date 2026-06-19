@@ -248,7 +248,7 @@ Do NOT run reviewers sequentially. Both cover the full review scope in parallel 
 
 For PRs that **only modify documentation files** (`.md` files, rustdoc comments, README, CONTRIBUTING, etc.), use a **single reviewer** instead of the parallel dual-reviewer approach:
 
-1. **Delegate to `rust-reviewer` only** — skip `rust-reviewer2` (architectural review is overkill for docs)
+1. **Delegate to `rust-reviewer` only** — skip `rust-reviewer2` (layer 2 review is overkill for docs)
 2. **Use a doc-focused prompt** with these criteria:
    - **Accuracy**: Does the documentation match the actual codebase behavior?
    - **Completeness**: Are all sections present? Missing information?
