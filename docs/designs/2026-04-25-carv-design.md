@@ -51,7 +51,8 @@ src/
 ├── hashing/
 │   ├── mod.rs
 │   ├── anchors.rs        # Anchor generation (word-based hashes + occurrence index)
-│   └── state.rs          # Per-file anchor state manager
+│   ├── state.rs          # Per-file anchor state manager
+│   └── words.txt         # Word list for hash-based anchors
 ├── treesitter/
 │   ├── mod.rs
 │   ├── parser.rs         # Parse files, run queries, cache invalidation
