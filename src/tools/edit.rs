@@ -1,6 +1,6 @@
 //! edit_file tool — anchor-based file editing.
 //!
-//! Uses stable word anchors (from [`read_file`]) to target edit locations.
+//! Uses stable word anchors (from [`crate::tools::fs::ReadFileTool`]) to target edit locations.
 //! Supports three operations: `replace` (the default), `insert_before`,
 //! and `insert_after`. Edits are batched per file via `check_overlaps`; edits
 //! within a file are applied bottom-to-top (sorted by `start` descending)
