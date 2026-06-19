@@ -163,7 +163,7 @@ git cat-file -p HEAD | grep -A10 "BEGIN SSH SIGNATURE"
 **Two-step review before every PR:**
 
 1. **Agent verifies the checklist** — the implementing agent (rust-expert or rust-coder) runs `cargo build / test / clippy / fmt` and checks all DoD items
-2. **rust-reviewer verifies the agent's work** — delegate to the reviewer subagent (qwen3.6-plus) for mechanical verification of the DoD checklist
+2. **Both reviewers verify the agent's work** — delegate to `rust-reviewer` (minimax-m3, layer 1) and `rust-reviewer2` (kimi-k2.7-code, layer 2) for full-scope review. Both cover the complete DoD checklist and depth standards.
 3. **PR created directly** — after reviewer approval, create the PR immediately (no pre-PR user sign-off)
 
 Do NOT proceed to PR creation until the reviewer agent signs off.
@@ -345,7 +345,7 @@ These files are a distinct review category from Rust code. Don't review them lik
 
 ## Review Depth Standards
 
-The reviewer (rust-reviewer) must go beyond mechanical DoD checks. These apply to all PRs:
+Both reviewers must go beyond mechanical DoD checks. Each covers the full scope below through a different model lens — this layered approach catches more issues than either reviewer alone:
 
 ### For all PRs
 - Read every line of the diff. Do not skim.
